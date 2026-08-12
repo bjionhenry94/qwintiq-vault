@@ -115,24 +115,40 @@ _SETPW_PAGE = """<!doctype html><html><head><meta charset="utf-8">
 </main></body></html>"""
 
 CSS = """
-:root{color-scheme:light dark}*{box-sizing:border-box;margin:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;
-display:flex;align-items:center;justify-content:center;background:#f4f5f7;color:#111}
-@media(prefers-color-scheme:dark){body{background:#101216;color:#eee}}
-.card{background:#fff;border-radius:14px;padding:40px 36px;max-width:400px;width:92%;
-box-shadow:0 8px 30px rgba(0,0,0,.08)}
-@media(prefers-color-scheme:dark){.card{background:#1a1d23;box-shadow:0 8px 30px rgba(0,0,0,.5)}}
-.brand{font-weight:700;letter-spacing:.14em;text-transform:uppercase;font-size:13px;color:#c07b28;margin-bottom:18px}
-h1{font-size:24px;margin-bottom:6px}.sub{color:#777;font-size:14px;margin-bottom:22px}
-label{display:block;font-size:13px;font-weight:600;margin-bottom:14px;color:#555}
-@media(prefers-color-scheme:dark){label{color:#aaa}}
-input{display:block;width:100%;margin-top:6px;padding:11px 12px;font-size:15px;border:1px solid #d5d8de;
-border-radius:8px;background:transparent;color:inherit}
-input:focus{outline:2px solid #c07b28;border-color:transparent}
-button{width:100%;padding:12px;margin-top:6px;font-size:15px;font-weight:600;border:0;border-radius:8px;
-background:#c07b28;color:#fff;cursor:pointer}button:hover{background:#a96a1f}
-.error{background:#fdecec;color:#b3261e;border-radius:8px;padding:10px 12px;font-size:14px;margin-bottom:16px}
-.foot{margin-top:20px;font-size:12.5px;color:#999}
+:root{color-scheme:light dark;
+--round:ui-rounded,"SF Pro Rounded","Poppins","Segoe UI",system-ui,-apple-system,sans-serif;
+--paper:#f7f3f0;--card:#ffffff;--ink:#241531;--ink-soft:#6f6678;
+--brand:#341948;--brand-hover:#241033;--purple:#8155ba;--cream:#e6ded3;
+--line:#eae3dc;--bad:#b3261e;--bad-bg:#fbeceb}
+@media(prefers-color-scheme:dark){:root{
+--paper:#160e1f;--card:#241531;--ink:#efeaf3;--ink-soft:#b0a6bd;
+--brand:#7b4fae;--brand-hover:#8a5cc0;--purple:#b98fe0;--cream:#2c2138;
+--line:#3a2b49;--bad:#f0938c;--bad-bg:#341620}}
+:root[data-theme="light"]{--paper:#f7f3f0;--card:#fff;--ink:#241531;--ink-soft:#6f6678;
+--brand:#341948;--brand-hover:#241033;--purple:#8155ba;--cream:#e6ded3;--line:#eae3dc;--bad:#b3261e;--bad-bg:#fbeceb}
+:root[data-theme="dark"]{--paper:#160e1f;--card:#241531;--ink:#efeaf3;--ink-soft:#b0a6bd;
+--brand:#7b4fae;--brand-hover:#8a5cc0;--purple:#b98fe0;--cream:#2c2138;--line:#3a2b49;--bad:#f0938c;--bad-bg:#341620}
+*{box-sizing:border-box;margin:0}
+body{font-family:var(--round);min-height:100vh;display:flex;align-items:center;justify-content:center;
+background:var(--paper);color:var(--ink);
+background-image:radial-gradient(circle at 50% -12%, color-mix(in srgb,var(--purple) 16%,transparent), transparent 60%)}
+.card{background:var(--card);border-radius:20px;padding:44px 38px;max-width:410px;width:92%;
+border-top:4px solid var(--brand);box-shadow:0 10px 40px rgba(52,25,72,.12)}
+@media(prefers-color-scheme:dark){.card{box-shadow:0 10px 40px rgba(0,0,0,.5)}}
+.brand{font-weight:700;letter-spacing:.02em;font-size:22px;color:var(--brand);margin-bottom:18px}
+.brand::after{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;
+background:var(--purple);margin-left:2px;vertical-align:baseline}
+h1{font-size:25px;font-weight:700;margin-bottom:6px;letter-spacing:-.01em}
+.sub{color:var(--ink-soft);font-size:14.5px;margin-bottom:24px;line-height:1.5}
+label{display:block;font-size:13px;font-weight:600;margin-bottom:15px;color:var(--ink)}
+input{display:block;width:100%;margin-top:7px;padding:12px 13px;font-size:15px;font-family:var(--round);
+border:1.5px solid var(--line);border-radius:11px;background:transparent;color:inherit}
+input:focus{outline:none;border-color:var(--purple);box-shadow:0 0 0 3px color-mix(in srgb,var(--purple) 22%,transparent)}
+button{width:100%;padding:13px;margin-top:8px;font-size:15px;font-weight:650;font-family:var(--round);
+border:0;border-radius:11px;background:var(--brand);color:#fff;cursor:pointer;transition:background .15s}
+button:hover{background:var(--brand-hover)}
+.error{background:var(--bad-bg);color:var(--bad);border-radius:10px;padding:11px 13px;font-size:14px;margin-bottom:16px}
+.foot{margin-top:22px;font-size:12.5px;color:var(--ink-soft)}
 """
 
 
