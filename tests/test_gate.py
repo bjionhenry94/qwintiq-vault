@@ -14,6 +14,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import re
 import secrets
 import sys
@@ -21,7 +22,9 @@ import sys
 import httpx
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8200"
-ADMIN = ("admin@qwintiq.local", "qwintiq-admin-dev")
+# Admin creds default to the local dev seed; override via env to run against a real deploy.
+ADMIN = (os.environ.get("ADMIN_EMAIL", "admin@qwintiq.local"),
+         os.environ.get("ADMIN_PASSWORD", "qwintiq-admin-dev"))
 CONSULTANT = ("test.consultant@example.com", "Test Consultant")
 
 results = []
@@ -109,6 +112,16 @@ def main():
 
     out = asyncio.run(mcp_call(token, "ping", {}))
     check("authenticated tool call works", "online" in out)
+
+    # Regression: behind a real proxy the Host is the public domain, not localhost. The MCP
+    # server's DNS-rebinding protection must not 421 it (this only surfaces off-localhost).
+    fh = httpx.post(BASE + "/mcp", headers={
+        "Authorization": f"Bearer {token}", "Host": "vault.example.com",
+        "Accept": "application/json, text/event-stream", "Content-Type": "application/json"},
+        json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "t", "version": "1"}}}, timeout=30)
+    check("foreign Host header accepted (no 421)", fh.status_code != 421, f"got {fh.status_code}")
 
     out = asyncio.run(mcp_call(token, "qwintiq_copywriter", {
         "problem": "slow PR cycles", "outcome": "coverage in 30 days",

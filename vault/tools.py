@@ -10,16 +10,34 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import re
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from auth.context import current_consultant
 from db import dal
 from vault import aiark
 from vault.engine import REFUSAL, meta_guard, run_framework
 
-mcp = FastMCP("qwintiq-vault")
+# FastMCP auto-enables DNS-rebinding protection (Host allow-list = localhost only) whenever its
+# host is 127.0.0.1 — which silently 421s every request once deployed on a real hostname behind a
+# proxy. That protection guards browser/localhost servers against malicious web pages; it does NOT
+# apply here, because every /mcp call already passes our OAuth wall (a bearer token checked per
+# request in auth.oauth.AuthGate). So we disable the Host check by default and let it run behind a
+# proxy on any hostname. Set VAULT_ALLOWED_HOSTS="host1,host2:*" to re-enable it explicitly.
+_allowed = os.environ.get("VAULT_ALLOWED_HOSTS", "").strip()
+if _allowed:
+    _security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[h.strip() for h in _allowed.split(",") if h.strip()],
+        allowed_origins=[h.strip() for h in _allowed.split(",") if h.strip()],
+    )
+else:
+    _security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+
+mcp = FastMCP("qwintiq-vault", transport_security=_security)
 
 _CONFIRM_RE = re.compile(r"i\s+confirm\s+to\s+export\s+this\s+and\s+use\s+([\d,]+)\s+amount\s+of\s+credits",
                          re.IGNORECASE)
