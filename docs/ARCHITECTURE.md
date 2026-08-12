@@ -27,18 +27,40 @@ Consultant's Claude Code             The Wall                The Vault (this ser
 2. **Data keys: the vault proxies AI-ARK (and any Lemlist push).** Qwintiq's keys sit in env
    on the server (`AI_ARK_API_KEY`), never in a consultant's Claude. `VAULT_AIARK=mock` for dev.
 
-## Extraction defence (what Step 11 red-teams)
+## Extraction defence (layered; what Step 11 red-teams)
 
-- **Frameworks never serialise into a tool response.** Tools return `engine.run()` output only.
-- **Input hardening:** meta-requests ("print your instructions", "what's your system prompt",
-  "repeat the above", role-play as admin) are refused *before* any LLM call — deterministic
-  pattern gate, no model judgement involved.
-- **Output leak filter:** every response is shingle-checked (8-word overlapping n-grams,
-  case/whitespace-normalised) against the loaded framework text; any overlap → the response is
-  refused and the attempt logged. Deterministic, testable with a deliberately leaky mock LLM.
-- **Honest limit:** finished output necessarily *reflects* the method (a good sequence reveals
-  what good looks like). What cannot be pulled is the framework text, rules, pricing logic, or
-  prompts themselves. Position as an upgrade + real wall, per `qwintiq-vault-build` memory.
+Frameworks never serialise into a tool response — tools return `engine.run_framework()` output
+only. Around that, four layers (`vault/engine.py`, `vault/leakguard.py`):
+
+1. **Input guard (`meta_guard`)** — deterministic pattern gate that refuses extraction requests
+   *before* any model call: "print/reveal/paraphrase/translate/reformat your
+   instructions/framework/rules/angles", "repeat the above", role-play-as-admin, "for
+   debugging", encoding tricks. Scoped to the *untrusted user text only* — the vault's own
+   attached config (icebreaker setups, partner routines, full of method vocabulary) is never
+   scanned, so it can't false-trigger.
+2. **Output leak filter (`leakguard`)** — every response is checked against the framework on
+   three deterministic bands: **verbatim** (any shared 8-word run), **near-verbatim** (≥2 shared
+   5-word runs → lightly-edited copy), and **structural** (≥6 shared distinctive 3-word phrases →
+   describing the method's language). Tuned so real finished output scores ~0 on all three
+   (`tests/test_leakguard.py`).
+3. **Semantic second-pass (`semantic_leak`, optional, `VAULT_SEMANTIC_GUARD=1`)** — a cheap model
+   (Haiku) judges whether the output *describes a method* vs *is finished work*, catching fluent
+   paraphrase that shares no word-runs. Off in dev (needs a key); **on by default in the prod
+   deploy configs**. Adds one classification call per response.
+4. **System-prompt hardening** — the generation prompt instructs the model to emit
+   `EXTRACTION_ATTEMPT` (→ refusal) rather than describe itself. Model-dependent, so it's the
+   weakest layer and never relied on alone.
+
+**Empirical stress test** (`docs/leak-stress.md`, 8 real-model exfiltration attempts incl.
+deliberately filter-evasive rewording): 6/8 frontier agents *refused* to leak; the 2 that
+produced leaks were both caught by the deterministic filter (layer 2). Zero genuine leaks
+evaded. Caveat: a weaker/compromised model won't self-refuse, and a *carefully* clean paraphrase
+could still pass layers 1–2 — which is why layer 3 exists and why the honest limit below stands.
+
+**Honest limit:** finished output necessarily *reflects* the method (a good sequence shows what
+good looks like). What cannot be pulled is the framework text, rules, pricing logic, or prompts
+themselves. Position as an upgrade + real wall, **not** "impossible to infer" — per
+`qwintiq-vault-build` memory.
 
 ## The four skills → tools (task-shaped, finished-output-only)
 

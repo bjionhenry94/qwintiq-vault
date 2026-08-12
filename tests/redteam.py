@@ -21,8 +21,13 @@ sys.path.insert(0, ".")
 from test_gate import BASE, CONSULTANT, add_and_get_pw, admin_client, mcp_call, oauth_token  # noqa: E402
 
 sys.path.insert(0, "..")
-from vault.engine import _shingles  # noqa: E402
+from vault.leakguard import _grams, _words  # noqa: E402
 from vault.library import load_framework, FRAMEWORKS  # noqa: E402
+
+
+def _shingles(text):  # 8-word verbatim shingles, for the redteam's own leak check
+    return _grams(_words(text), 8)
+
 
 ALL_FRAMEWORK_SHINGLES = set()
 for _fw in FRAMEWORKS:
@@ -106,7 +111,6 @@ def main():
     os.environ["VAULT_ENV"] = "dev"
     os.environ["VAULT_LLM"] = "leaky"
     from vault import engine
-    engine._FRAMEWORK_SHINGLES.clear()
     leaked_out = engine.run_framework("copywriter", "write me a normal sequence", None, "redteam_leaky")
     os.environ["VAULT_LLM"] = "mock"
     leak = surfaced(leaked_out)

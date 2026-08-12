@@ -61,7 +61,9 @@ def qwintiq_icebreaker(prospects: list[dict], setup_name: str = "Qwintiq partner
     """
     setup = dal.state_get(_cid(), "icebreaker_setup", setup_name)
     task = json.dumps({"prospects": prospects, "setup": setup["config"] if setup else None})
-    return run_framework("icebreaker", task, _cid(), "qwintiq_icebreaker")
+    # Guard only the user-supplied prospects; the setup config is trusted vault data.
+    return run_framework("icebreaker", task, _cid(), "qwintiq_icebreaker",
+                         guard_text=json.dumps(prospects))
 
 
 @mcp.tool()
@@ -187,7 +189,10 @@ def qwintiq_partner_signals(routine_name: str = "", candidate_companies: list[di
                      f"'I confirm to export this and use {n} amount of credits' — then call "
                      "again with their typed sentence as confirmation_phrase."),
         })
-    return run_framework("partner_signals", task, cid, "qwintiq_partner_signals")
+    # Guard only the user-supplied candidates/phrase; the routine config is trusted vault data.
+    return run_framework("partner_signals", task, cid, "qwintiq_partner_signals",
+                         guard_text=json.dumps({"candidates": candidate_companies or [],
+                                                "confirmation_phrase": confirmation_phrase}))
 
 
 # ---------- Vault-side state: setups + routines live here, never on a consultant's disk ----

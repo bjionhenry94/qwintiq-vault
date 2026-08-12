@@ -38,3 +38,5 @@ services:
         value: Aliyah Harith
       - key: VAULT_MODEL
         value: claude-sonnet-5
+      - key: VAULT_SEMANTIC_GUARD    # belt-and-suspenders: catch fluent-paraphrase leaks (Haiku)
+        value: "1"

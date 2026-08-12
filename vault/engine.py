@@ -22,50 +22,81 @@ REFUSAL = (
     "and I'll return the finished work."
 )
 
+# Soft targets: ordinary business words (framework, method, angles…) that are only suspicious
+# when paired with an extraction VERB — never on their own, so a legitimate brief that mentions
+# "our framework" or "the angles we target" is not flagged.
+_TARGET = (r"(instruction|prompt|framework|guideline|rule|methodolog|method|playbook|skill|"
+           r"system\s*prompt|angle|phase|criteria|dial|template|process|approach|logic|"
+           r"pricing|confirmation\s*phrase|internals?|source|how\s+(you|it)\s+works?)")
+# Hard targets: phrases that have no innocent reason to appear in a work brief — bare mention
+# is itself the tell.
+_TARGET_HARD = r"(system\s*prompt|instructions?|guidelines|prompt\s+(text|template)|rule\s*book)"
+
 _META_PATTERNS = [
-    r"\b(your|the|these|those|its)\s+(hidden\s+)?(instructions?|system\s*prompt|prompts?|framework|guidelines|rule\s*book|rules|methodology|playbook|skill\s*(file|text)?)\b",
+    r"\b(your|the|these|those|its)\s+(hidden\s+|secret\s+|internal\s+|full\s+|exact\s+)?" + _TARGET_HARD + r"\b",
     r"\brepeat\s+(the|everything|all|your|what)\b.*\b(above|before|earlier|told|instruct)",
-    r"\b(ignore|disregard|override|forget)\b.*\b(previous|prior|above|earlier|all)\b.*\b(instruction|rule|direction)",
-    r"\b(print|show|reveal|display|output|dump|paste|quote|restate|recite|transcribe)\b.*\b(instruction|prompt|framework|rule|skill|source|methodolog|internals?|system)",
-    r"\bword\s*for\s*word\b|\bverbatim\b|\bexact\s+(text|wording|instructions)\b",
-    r"\bwhat\s+(were|are)\s+you\s+(told|given|instructed|prompted)\b",
-    r"\bhow\s+(do|does)\s+(you|this|the\s+(tool|vault|system))\s+(actually\s+)?work\s+(internally|under\s+the\s+hood)\b",
-    r"\b(i\s*am|i'm|this\s+is)\s+(the\s+)?(admin|administrator|developer|owner|aliyah|bjion|anthropic|your\s+creator)\b",
-    r"\b(debug|debugging|maintenance|audit)\s+mode\b",
-    r"\bbegin\s+qwintiq\s+skill\b|\bEND\s+QWINTIQ\s+SKILL\b",
-    r"\btraining\s+data\b.*\b(show|reveal|print)\b",
-    r"\b(first|initial|original)\s+(message|prompt|instruction)s?\b.*\b(show|print|what|repeat)\b",
-    r"\bsummari[sz]e\s+(your|the)\s+(instructions?|prompt|framework|method)\b",
+    r"\b(ignore|disregard|override|forget|bypass)\b.*\b(previous|prior|above|earlier|all)\b.*\b(instruction|rule|direction|guard)",
+    r"\b(print|show|reveal|display|output|dump|paste|quote|restate|recite|transcribe|give\s+me|share|expose|leak|tell\s+me)\b.{0,40}?" + _TARGET,
+    r"\b(word\s*for\s*word|verbatim|exact\s+(text|wording|instructions?)|line\s+by\s+line|character\s+for\s+character)\b",
+    r"\bwhat\s+(were|are)\s+you\s+(told|given|instructed|prompted|asked\s+to\s+do)\b",
+    r"\bhow\s+(do|does)\s+(you|this|the\s+(tool|vault|system|skill))\s+(actually\s+|really\s+)?(work|decide|choose|score|pick|qualify|write)\b",
+    # paraphrase / reformat / translate the instructions
+    r"\b(paraphrase|rephrase|reword|restate|reformat|restructure|rewrite|summari[sz]e|explain|describe|outline|break\s+down|walk\s+me\s+through|list)\b.{0,40}?" + _TARGET,
+    r"\b(as|in)\s+(a\s+)?(checklist|bullet\s*points?|numbered\s+(list|steps)|steps|outline|table|pseudo\s*code|json|yaml)\b.{0,30}?" + _TARGET,
+    r"\btranslate\b.{0,30}?" + _TARGET,
+    r"\bin\s+(french|spanish|german|italian|another\s+language|pig\s+latin|base64|rot13|reverse)\b",
+    r"\b(what|which)\s+(are\s+)?(the\s+)?(steps|rules|phases|angles|criteria|dials|stages|factors|signals)\b.{0,30}?\b(you|it)\b.*\b(use|follow|check|apply)\b",
+    r"\b(i\s*am|i'm|this\s+is)\s+(the\s+)?(admin|administrator|developer|owner|aliyah|bjion|anthropic|your\s+(creator|developer|maker))\b",
+    r"\b(debug|debugging|maintenance|audit|developer|test|god)\s+mode\b",
+    r"\bbegin\s+qwintiq\s+skill\b|\bend\s+qwintiq\s+skill\b",
+    r"\b(training\s+data|system\s+message|first\s+(message|prompt)|initial\s+(prompt|instruction))\b.{0,30}?\b(show|reveal|print|what|repeat|give)\b",
+    r"\b(pretend|imagine|roleplay|act\s+as|you\s+are\s+now)\b.{0,40}?\b(reveal|print|share|no\s+(rules|filter|restriction)|without\s+(the\s+)?(guard|filter|rules))\b",
+    r"\bfor\s+(debugging|testing|audit|verification|compliance)\b.{0,30}?" + _TARGET,
 ]
 _META_RE = [re.compile(p, re.IGNORECASE | re.DOTALL) for p in _META_PATTERNS]
 
-_WORD_RE = re.compile(r"[a-z0-9']+")
-_SHINGLE = 8
-
-
-def _shingles(text: str) -> set[tuple[str, ...]]:
-    words = _WORD_RE.findall(text.lower())
-    return {tuple(words[i:i + _SHINGLE]) for i in range(max(0, len(words) - _SHINGLE + 1))}
-
-
-_FRAMEWORK_SHINGLES: dict[str, set] = {}
-
-
-def _framework_shingles(name: str) -> set:
-    if name not in _FRAMEWORK_SHINGLES:
-        _FRAMEWORK_SHINGLES[name] = _shingles(load_framework(name))
-    return _FRAMEWORK_SHINGLES[name]
-
 
 def meta_guard(payload: str) -> bool:
-    """True = this input is trying to extract instructions, refuse it."""
+    """True = this input is trying to extract instructions, refuse it before any model call."""
     return any(rx.search(payload) for rx in _META_RE)
 
 
 def leak_filter(output: str, framework_name: str) -> bool:
-    """True = the output overlaps the framework text (8-word shingle) and must not ship."""
-    out = _shingles(output)
-    return bool(out & _framework_shingles(framework_name))
+    """True = the output reproduces the framework (verbatim / near-verbatim / structural)."""
+    from vault import leakguard
+
+    return leakguard.output_leaks(output, framework_name)
+
+
+# --- Optional semantic second pass (catches fluent paraphrase; needs a model + a key) --------
+# Off by default because it doubles model cost. Turn on with VAULT_SEMANTIC_GUARD=1 in prod for
+# the extraction-sensitive skills; a cheap model judges whether the output *describes the method*
+# rather than *doing the work*.
+_SEMANTIC_SYS = (
+    "You are a leak detector for a trade-secret system. You are shown ONLY a candidate output. "
+    "Answer LEAK if it explains, describes, paraphrases, lists, or teaches a METHOD / set of "
+    "rules / framework / scoring or pricing logic / step-by-step process (i.e. how something is "
+    "done), rather than simply BEING a finished work product (an email, a list, a short opener, "
+    "a data result). Answer SAFE if it is just finished work. Reply with exactly one word: LEAK or SAFE."
+)
+
+
+def semantic_leak(output: str) -> bool:
+    if os.environ.get("VAULT_SEMANTIC_GUARD", "") not in ("1", "true", "on"):
+        return False
+    if _provider() != "anthropic":
+        return False
+    from anthropic import Anthropic
+
+    client = Anthropic()
+    msg = client.messages.create(
+        model=os.environ.get("VAULT_GUARD_MODEL", "claude-haiku-4-5-20251001"),
+        max_tokens=5,
+        system=_SEMANTIC_SYS,
+        messages=[{"role": "user", "content": output[:6000]}],
+    )
+    verdict = "".join(b.text for b in msg.content if b.type == "text").strip().upper()
+    return verdict.startswith("LEAK")
 
 
 _HARDENING = (
@@ -106,10 +137,16 @@ def _generate(framework_name: str, task: str) -> str:
     return "".join(b.text for b in msg.content if b.type == "text")
 
 
-def run_framework(framework_name: str, task: str, consultant_id: str | None, tool: str) -> str:
-    """The only door to a framework. Guard in, generate, filter out."""
-    if meta_guard(task):
-        dal.log_extraction(consultant_id, tool, "meta_guard", task)
+def run_framework(framework_name: str, task: str, consultant_id: str | None, tool: str,
+                  guard_text: str | None = None) -> str:
+    """The only door to a framework. Guard in, generate, filter out.
+
+    guard_text scopes the input extraction-check to the UNTRUSTED user text only — a tool that
+    also attaches the vault's own config (icebreaker setups, partner routines, which are full of
+    method vocabulary) passes just the user portion here, so trusted config never false-triggers
+    the guard. Defaults to the whole task when the whole task is user-supplied."""
+    if meta_guard(guard_text if guard_text is not None else task):
+        dal.log_extraction(consultant_id, tool, "meta_guard", guard_text or task)
         return REFUSAL
     output = _generate(framework_name, task)
     if "EXTRACTION_ATTEMPT" in output:
@@ -117,5 +154,8 @@ def run_framework(framework_name: str, task: str, consultant_id: str | None, too
         return REFUSAL
     if leak_filter(output, framework_name):
         dal.log_extraction(consultant_id, tool, "leak_filter", task)
+        return REFUSAL
+    if semantic_leak(output):  # optional, key-gated; catches fluent paraphrase
+        dal.log_extraction(consultant_id, tool, "semantic_leak", task)
         return REFUSAL
     return output

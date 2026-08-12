@@ -1,0 +1,10 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.env
+db/vault.dev.sqlite3*
+.DS_Store
+tests
+docs/redteam-log.json

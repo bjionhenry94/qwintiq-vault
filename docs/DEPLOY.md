@@ -50,6 +50,20 @@ If you'd rather use Supabase than Render Postgres: remove the `databases:` block
 (optionally) run `db/schema.sql` in Supabase — though `init_db` will create the tables on
 first boot either way. Everything else is identical.
 
+## Alternative host: Docker (Fly.io / Railway) — if Render is unavailable
+The repo ships a `Dockerfile` + `fly.toml`, so the identical vault runs on any container host.
+Fly.io example:
+```
+fly launch --no-deploy                 # reads fly.toml (VAULT_ENV=prod turns on prod guards)
+fly postgres create && fly postgres attach <db>   # sets DATABASE_URL, or use any external PG
+fly secrets set ANTHROPIC_API_KEY=... SECRET_KEY=$(openssl rand -hex 32) \
+                ADMIN_EMAIL=... ADMIN_PASSWORD=...     # AI_ARK_API_KEY optional
+fly deploy
+```
+Then smoke-test exactly as in step 3 against the `https://<app>.fly.dev` URL. Railway is the
+same idea (Dockerfile auto-detected; set the same env vars; attach a Postgres plugin). Keep it
+to **one instance** — the MCP session manager and rate limiter hold in-memory state.
+
 ## Costs (Navreo test)
 Render Starter web (~$7) + Render Postgres basic (~$7) + Anthropic/AI-ARK usage on Navreo's
 keys. Well within the $50/mo tooling line for the eventual Qwintiq deploy.
