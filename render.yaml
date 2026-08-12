@@ -1,0 +1,40 @@
+# Render blueprint — deploy under the chosen Render account (Navreo for the test deploy;
+# Qwintiq for final handover, SOW §11). Push this repo to a private GitHub repo, then in
+# Render: New > Blueprint > pick the repo. The app self-bootstraps its tables on first boot.
+databases:
+  - name: qwintiq-vault-db
+    plan: basic-256mb          # Render-managed Postgres; the $50/mo tooling line covers this
+    databaseName: qwintiq_vault
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: qwintiq-vault
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    healthCheckPath: /admin/login   # 200 without auth (route resolves before the MCP AuthGate)
+    envVars:
+      - key: DATABASE_URL             # auto-injected from the managed Postgres above
+        fromDatabase:
+          name: qwintiq-vault-db
+          property: connectionString
+      - key: RENDER                   # marks this as a real deploy (fail-closed prod guards)
+        value: "true"
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      - key: ANTHROPIC_API_KEY        # Navreo's key for the test deploy — enter in the dashboard
+        sync: false
+      - key: AI_ARK_API_KEY           # optional; the vault proxies AI-ARK data calls
+        sync: false
+      - key: SECRET_KEY               # signs the admin session cookie
+        generateValue: true
+      - key: ADMIN_EMAIL              # the control-panel login (required — no default in prod)
+        sync: false
+      - key: ADMIN_PASSWORD           # required — set a strong one; no default in prod
+        sync: false
+      - key: ADMIN_NAME
+        value: Aliyah Harith
+      - key: VAULT_MODEL
+        value: claude-sonnet-5

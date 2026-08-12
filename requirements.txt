@@ -1,0 +1,13 @@
+# Pinned to the mature 1.x FastMCP line (2.0.0 restructured the high-level API).
+mcp>=1.9.0,<2.0.0
+python-dotenv>=1.0.0
+uvicorn[standard]>=0.30
+httpx>=0.27
+# Starlette is a DIRECT dependency (server.py/panel.py/oauth.py import it) — pin explicitly
+# rather than relying on it arriving transitively via mcp.
+starlette>=0.37,<2
+# Server-side execution (finished-output-only decision, 2026-08-12): the vault DOES call
+# an LLM now. Key comes from ANTHROPIC_API_KEY (Qwintiq's account at deploy).
+anthropic>=0.40
+# Prod DB (Supabase Postgres). Dev falls back to SQLite with no extra install.
+psycopg[binary]>=3.1

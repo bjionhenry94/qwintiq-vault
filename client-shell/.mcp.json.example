@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "qwintiq": {
+      "type": "http",
+      "url": "https://vault.qwintiq.example/mcp"
+    }
+  }
+}
