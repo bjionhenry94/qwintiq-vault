@@ -30,8 +30,13 @@ _WORD_RE = re.compile(r"[a-z0-9']+")
 # phrase" test false-positives on real output. Instead we measure how MUCH of the output is
 # lifted verbatim: a dump is mostly framework text (high ratio) or lifts many distinct windows.
 _VERBATIM_N = 8
-_LEAK_RATIO = 0.22    # >= 22% of the output's 8-word windows lifted verbatim = a dump
-_LEAK_ABS = 14        # ...or 14+ distinct lifted windows outright (catches a long block in long output)
+# Real finished copy legitimately reuses the framework's mandated phrasing AND its section
+# labels/scaffolding ("Sequence 1", "Message 1 — Service Pitch", "[Icebreaker]"), so a chunk of
+# every output overlaps the framework (~30% observed on real output). The filter's job is only to
+# catch a WHOLESALE DUMP, so the bar is high: the output has to be MOSTLY framework text. The input
+# meta_guard + hardening prompt are the real defence against extraction; this is the backstop.
+_LEAK_RATIO = 0.62    # >= 62% of the output's 8-word windows lifted verbatim = a dump, not copy
+_LEAK_ABS = 120       # ...or 120+ distinct lifted windows outright (a very long verbatim block)
 
 _STOP = frozenset(
     "the a an and or but if then of to in on for with at by from as is are was were be been "
