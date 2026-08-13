@@ -125,6 +125,14 @@ P.S - [Case study / social proof — omit entirely if no proof was provided]
 - **Match the briefing exactly.** Use the exact term the user describes (gap analysis, audit,
   checklist, session, guide, playbook, research pack, framework). Do not default to a video/Loom.
   Do not rename or soften it.
+- **Never invent a new offer.** If the brief names no shareable resource, the value-upfront
+  offer is either (a) the brief's own risk reversal framed as a free/low-risk taste of the
+  service ("first month half price", "two roles sourced free"), or (b) an insight share about
+  how peers achieve the brief's outcome ("happy to share how other agencies package X"). Never
+  introduce an offer type the brief never mentioned (a strategy session, audit, or workshop that
+  isn't in the brief reads as bait-and-switch and confuses what is being sold).
+- **One offer per campaign.** Every message and pivot sells the same service and the same terms
+  as the brief — the pivot changes the ASK (soft vs hard), never the offer.
 - **Reality check — can we deliver it without their involvement first?**
   - Needs their platform/data/time (audit, gap analysis, session) → frame as something you are
     **proposing to do for them**. ✅ "We'd love to run a free gap analysis for {{companyName}}…"
@@ -137,7 +145,12 @@ P.S - [Case study / social proof — omit entirely if no proof was provided]
     for {{companyName}}, it covers…" Always name the resource type AND the company.
 - **Problem Statement Rule:** every value-upfront message needs a generalised problem statement
   naming the universal pain the resource addresses. Qualify every key noun with its function
-  ("sales playbook" not "playbook"). It counts toward the 45–70 word limit.
+  ("sales playbook" not "playbook"). It counts toward the 45–70 word limit. Craft: ONE crisp,
+  concrete sentence — paint the cost of the problem vividly ("placements walk out the door"),
+  never fuse cause and effect into one strained clause, and never mirror the brief's sentence
+  structure.
+- **P.S proof rule:** rewrite the proof as one short grammatical sentence ("9 agencies use us
+  today; average time-to-shortlist is down 60%."). Never paste the brief's shorthand verbatim.
 - **CTA Delivery Rule:**
   - Deliverable without a conversation (guide, playbook, checklist, video) → soft send CTA:
     "Can I share it with you?"
