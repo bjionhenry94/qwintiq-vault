@@ -80,12 +80,24 @@ Hi {{firstName}},
 
 [Icebreaker]
 
-If we could [Problem] by [Service / clear outcome], [risk reversal], [CTA]?
+[Problem + service/outcome + risk reversal + direct call CTA, written as ONE or TWO natural
+sentences]
 
 [Your Name]
 
 P.S - [Case study / social proof — omit this line entirely if no proof was provided]
 ```
+
+**Sentence-craft rules for the pitch line — CRITICAL:**
+- Carry all four elements (problem, service/outcome, risk reversal, call CTA), but write them
+  the way a founder types an email: one or two flowing sentences, **never more than two clauses
+  per sentence**. Splitting into two sentences is always allowed and usually better.
+- The skeleton "If we could [X] by [Y], [Z], [CTA]?" is a *content checklist, not wording to
+  reproduce*. Never output the literal "address the issue of…" / "by providing…" chain — restate
+  the brief's ideas in your own words, matching its meaning, not its phrasing or capitalisation.
+- Example of the register to hit: "If we could turn the influencer campaigns your e-commerce
+  clients keep asking for into a revenue line you deliver under your own brand — on revenue
+  share only, no retainer until the first campaign ships — would you be open to a quick call?"
 
 ## Message 1 (Sequence 2) — Value Upfront
 Value-first, trust-building. Not designed to book a call — designed to lower resistance. Offer
@@ -223,17 +235,21 @@ explanation. Response > impressiveness.
 
 # REQUIRED OUTPUT FORMAT (return EXACTLY this — no commentary before or after)
 
-Two hard rules for filling the templates:
+Four hard rules for filling the templates:
 1. The line `{{icebreaker}}` appears **verbatim, exactly as written**, as the first body line of
    Message 1 in BOTH sequences. It is a merge variable filled per lead at upload — never replace
    it with a written-out opener or problem line.
 2. Every `[filled …]` slot must produce a sentence that reads as **natural English**. Rephrase
    the brief's wording as needed to make the sentence grammatical — never paste a clause in raw
-   if it breaks the sentence around it.
+   if it breaks the sentence around it, and never copy the brief's capitalisation quirks.
+3. **Message bodies are plain text — no bold, no italics, no markdown inside the body.** Bold is
+   for the section headers of this format only. A bolded clause in an email reads as shouting.
+4. **Subjects are 2–4 casual words** a person would type ("Quick one", "Worth sharing", "A
+   thought") — never a title-case service label like "Influencer Campaign Solution".
 
 📞 **SEQUENCE 1 — Service Pitch (go straight for the call)** 📞
 
-**Subject (email send only):** **[subject]**
+**Subject (email send only):** [subject]
 
 ➡️ **Message 1 — Service Pitch**
 
@@ -241,23 +257,24 @@ Hi {{firstName}},
 
 {{icebreaker}}
 
-If we could **[filled problem]** by **[filled service / outcome]**, **[filled risk reversal]**, **[filled CTA]?**
+[Problem + service/outcome + risk reversal + call CTA as one or two natural sentences, plain
+text, per the Sentence-craft rules]
 
 [Your Name]
 
-P.S - **[filled proof — omit if none]**
+P.S - [filled proof — omit if none]
 
 ➡️ **Message 2 — Value Upfront pivot** *(no subject)*
 
 Hi {{firstName}},
 
-Alternatively, if my last message wasn't relevant, **[filled offer]**
+Alternatively, if my last message wasn't relevant, [filled offer]
 
-**[filled soft CTA]**
+[filled soft CTA]
 
 [Your Name]
 
-P.S - **[filled proof — omit if none]**
+P.S - [filled proof — omit if none]
 
 ➡️ **Message 3 — Check-in Follow-up** *(no subject)*
 
@@ -271,7 +288,7 @@ Just wanted to check in one last time as to whether what I shared was relevant.
 
 🎁 **SEQUENCE 2 — Value Upfront (give value first)** 🎁
 
-**Subject (email send only):** **[subject]**
+**Subject (email send only):** [subject]
 
 ➡️ **Message 1 — Value Upfront**
 
@@ -279,25 +296,26 @@ Hi {{firstName}},
 
 {{icebreaker}}
 
-**[filled generalised problem statement]**
+[filled generalised problem statement]
 
-**[filled offer]**
+[filled offer]
 
-**[filled soft CTA]**
+[filled soft CTA]
 
 [Your Name]
 
-P.S - **[filled proof — omit if none]**
+P.S - [filled proof — omit if none]
 
 ➡️ **Message 2 — Service Pitch pivot** *(no subject)*
 
 Hi {{firstName}},
 
-Alternatively, if my last message wasn't relevant, we could **[filled service + outcome]**, **[filled risk reversal]**. **[filled call CTA]?**
+Alternatively, if my last message wasn't relevant, [service + outcome + risk reversal + call
+CTA as one or two natural sentences, plain text, per the Sentence-craft rules]
 
 [Your Name]
 
-P.S - **[filled proof — omit if none]**
+P.S - [filled proof — omit if none]
 
 ➡️ **Message 3 — Check-in Follow-up** *(no subject)*
 
