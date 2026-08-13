@@ -40,8 +40,10 @@ def main():
     routines = json.loads(asyncio.run(mcp_call(token, "qwintiq_partner_signals", {})))
     check("partner routines listed from vault state (seeded)", len(routines.get("routines", [])) >= 2)
 
+    # pick a seeded shared routine, not an autopilot artifact left by a prior run
+    supervised = next(r for r in routines["routines"] if "AP test" not in r)
     run = asyncio.run(mcp_call(token, "qwintiq_partner_signals", {
-        "routine_name": routines["routines"][0],
+        "routine_name": supervised,
         "candidate_companies": [{"name": "NewCo", "website": "newco.example",
                                  "what_happened": "raised Series A"}]}))
     check("partner signals: paid pull gated behind typed phrase",
