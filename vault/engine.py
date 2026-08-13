@@ -190,7 +190,29 @@ def run_framework(framework_name: str, task: str, consultant_id: str | None, too
     if leak_filter(output, framework_name):
         dal.log_extraction(consultant_id, tool, "leak_filter", task)
         return REFUSAL
-    if semantic_leak(output):  # optional, key-gated; catches fluent paraphrase
-        dal.log_extraction(consultant_id, tool, "semantic_leak", task)
-        return REFUSAL
+    # The semantic second-pass is intentionally NOT called on the live path: it can false-refuse
+    # legitimate copy, so it is disabled until reworked. The input guard + verbatim-dump filter +
+    # hardening prompt are the defence. diagnose() still reports what it would say, for the admin.
     return output
+
+
+def diagnose(framework_name: str, task: str) -> dict:
+    """Admin-only: run generation and report which guard (if any) would refuse it, plus a short
+    snippet of the raw model output. Never reachable by a consultant — used by /admin Test."""
+    from vault import leakguard
+
+    meta = meta_guard(task)
+    if meta:
+        return {"provider": _provider(), "meta_guard": True, "extraction_flag": False,
+                "leak": {"leaked": False, "reason": "", "scores": {}},
+                "semantic": False, "raw_head": ""}
+    raw = _generate(framework_name, task)
+    extraction = raw.strip().startswith("EXTRACTION_ATTEMPT")
+    leaked, reason, scores = leakguard.inspect(raw, framework_name)
+    try:
+        semantic = semantic_leak(raw)
+    except Exception:
+        semantic = False
+    return {"provider": _provider(), "meta_guard": False, "extraction_flag": extraction,
+            "leak": {"leaked": leaked, "reason": reason, "scores": scores},
+            "semantic": semantic, "raw_head": raw[:400]}

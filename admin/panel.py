@@ -350,19 +350,27 @@ async def settings_test(request: Request):
             key_line = (f'<strong>The {html.escape(provider.title())} key was rejected ✗</strong> — '
                         f'{html.escape(type(e).__name__)}: {html.escape(str(e)[:200])}')
             ok = False
-    # 2. Does a real sample brief come back as finished work (not a refused guardrail)?
+    # 2. Run a real sample brief and report which guard (if any) would block it.
     skill_line = ""
     if ok:
-        sample = engine.run_framework("copywriter", json.dumps({
-            "problem": "unpredictable lead flow", "outcome": "a steady pipeline of meetings",
-            "risk_reversal": "pay per meeting held", "service": "done-for-you appointment setting"}),
-            None, "admin_test")
-        if "returns finished work only" in sample or "didn't go through" in sample:
-            skill_line = ('<br><br>But a sample skill run came back <strong>blocked by a guardrail</strong>. '
-                          'Tell your developer — the leak filter may be too strict.')
+        d = engine.diagnose("copywriter", json.dumps({
+            "problem": "unpredictable lead flow from their current outbound",
+            "outcome": "a steady, predictable pipeline of qualified meetings",
+            "risk_reversal": "only pay per meeting that actually happens",
+            "service": "done-for-you B2B appointment setting"}))
+        if d["meta_guard"]:
+            why = "the input guard flagged the brief"
+        elif d["extraction_flag"]:
+            why = "the model returned a refusal token"
+        elif d["leak"]["leaked"]:
+            why = f"the leak filter tripped ({html.escape(str(d['leak']['scores']))})"
         else:
-            skill_line = ('<br><br>Sample skill output (first lines):<br>'
-                          f'<span style="font-family:var(--mono);font-size:12.5px">{html.escape(sample[:220])}…</span>')
+            why = None
+        head = f'<span style="font-family:var(--mono);font-size:12px">{html.escape(d["raw_head"][:240])}…</span>'
+        if why:
+            skill_line = f'<br><br><strong>Sample skill BLOCKED</strong> — {why}.<br>Model produced: {head}'
+        else:
+            skill_line = f'<br><br><strong>Sample skill works ✓</strong> — real output:<br>{head}'
     banner = f'<div class="notice">{key_line}{skill_line}</div>'
     return _settings_page(request, banner)
 
