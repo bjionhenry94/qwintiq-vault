@@ -8,8 +8,10 @@ exact row count being pulled.
 from __future__ import annotations
 
 import csv
+import functools
 import io
 import json
+import logging
 import os
 import re
 
@@ -19,7 +21,34 @@ from mcp.server.transport_security import TransportSecuritySettings
 from auth.context import current_consultant
 from db import dal
 from vault import aiark
+from vault.aiark import DataUnavailable
 from vault.engine import REFUSAL, meta_guard, run_framework
+
+_log = logging.getLogger("qwintiq.vault")
+
+# Curtain guard: NOTHING about the vault's internals may reach a consultant through an error.
+# Without this, an unhandled exception is surfaced verbatim by the MCP layer ("Error executing
+# tool …: Client error '401' for url 'https://api.ai-ark.com/…'") — leaking the data provider,
+# endpoints, the model behind the skills, DB errors, etc. Every tool is wrapped so the real cause
+# is logged server-side (admin only) and the consultant sees a generic, internals-free message.
+_SAFE_ERROR = ("Something didn't go through on the Qwintiq side just now. Please try again in a "
+               "moment — if it keeps happening, let your Qwintiq admin know. Nothing to fix on your end.")
+_DATA_ERROR = ("The data lookup is temporarily unavailable. Please try again shortly — if it "
+               "persists, your Qwintiq admin needs to check the vault's data connection.")
+
+
+def _safe(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except DataUnavailable:
+            _log.warning("data lookup failed in %s", fn.__name__)
+            return _DATA_ERROR
+        except Exception:
+            _log.exception("tool %s failed", fn.__name__)  # full detail stays in the server log
+            return _SAFE_ERROR
+    return wrapper
 
 # FastMCP auto-enables DNS-rebinding protection (Host allow-list = localhost only) whenever its
 # host is 127.0.0.1 — which silently 421s every request once deployed on a real hostname behind a
@@ -49,12 +78,14 @@ def _cid() -> str | None:
 
 
 @mcp.tool()
+@_safe
 def ping() -> str:
     """Health check. Confirms the Qwintiq vault is reachable and responding."""
     return "qwintiq-vault: online"
 
 
 @mcp.tool()
+@_safe
 def qwintiq_copywriter(problem: str, outcome: str, risk_reversal: str, service: str,
                        proof: str = "", icebreaker_note: str = "") -> str:
     """Write Qwintiq outreach copy — the finished email + LinkedIn sequences, Lemlist-ready.
@@ -69,6 +100,7 @@ def qwintiq_copywriter(problem: str, outcome: str, risk_reversal: str, service: 
 
 
 @mcp.tool()
+@_safe
 def qwintiq_icebreaker(prospects: list[dict], setup_name: str = "Qwintiq partnership icebreakers") -> str:
     """Write personalised opening lines for partnership outreach prospects.
 
@@ -85,6 +117,7 @@ def qwintiq_icebreaker(prospects: list[dict], setup_name: str = "Qwintiq partner
 
 
 @mcp.tool()
+@_safe
 def qwintiq_list_count(what_you_sell: str, industry: str, country: str,
                        size_min: int | None = None, size_max: int | None = None,
                        roles: str = "", keywords: list[str] | None = None,
@@ -128,6 +161,7 @@ def qwintiq_list_count(what_you_sell: str, industry: str, country: str,
 
 
 @mcp.tool()
+@_safe
 def qwintiq_list_export(kind: str, filters: dict, max_rows: int, confirmation_phrase: str) -> str:
     """Export the confirmed list (kind: 'companies' or 'decision_makers') as CSV text.
 
@@ -167,6 +201,7 @@ def qwintiq_list_export(kind: str, filters: dict, max_rows: int, confirmation_ph
 
 
 @mcp.tool()
+@_safe
 def qwintiq_partner_signals(routine_name: str = "", candidate_companies: list[dict] | None = None,
                             confirmation_phrase: str = "") -> str:
     """Run Qwintiq's daily partner/PR signal routine.
@@ -216,6 +251,7 @@ def qwintiq_partner_signals(routine_name: str = "", candidate_companies: list[di
 # ---------- Vault-side state: setups + routines live here, never on a consultant's disk ----
 
 @mcp.tool()
+@_safe
 def qwintiq_setup_list() -> str:
     """List the user's saved icebreaker setups (plus the shared Qwintiq default)."""
     return json.dumps([{"name": s["name"], "shared": s["consultant_id"] is None,
@@ -224,6 +260,7 @@ def qwintiq_setup_list() -> str:
 
 
 @mcp.tool()
+@_safe
 def qwintiq_setup_save(name: str, config: dict) -> str:
     """Save/update an icebreaker setup (angles, order, recency, off-limits, backups) in the
     vault under the user's account. Edit in plain words with the user, then save here —
@@ -233,6 +270,7 @@ def qwintiq_setup_save(name: str, config: dict) -> str:
 
 
 @mcp.tool()
+@_safe
 def qwintiq_routine_list() -> str:
     """List the user's saved partner-signal routines (plus shared Qwintiq defaults)."""
     return json.dumps([{"name": s["name"], "shared": s["consultant_id"] is None,
@@ -241,6 +279,7 @@ def qwintiq_routine_list() -> str:
 
 
 @mcp.tool()
+@_safe
 def qwintiq_routine_save(name: str, config: dict) -> str:
     """Save/update a partner-signal routine (signals, company rule, roles, icebreaker style,
     campaign, run mode + credit cap) in the vault under the user's account. An autopilot

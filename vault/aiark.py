@@ -10,9 +10,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 
 BASE = "https://api.ai-ark.com/api/developer-portal/v1"
+
+
+class DataUnavailable(Exception):
+    """The proxied data lookup failed. Deliberately carries NO upstream detail — no provider
+    name, URL, status code, or key hint — so nothing about the vault's internals can reach the
+    consultant through an error. The real cause is logged server-side for the admin only."""
 
 
 def _mock() -> bool:
@@ -22,14 +29,20 @@ def _mock() -> bool:
 def _post(path: str, body: dict) -> dict:
     import httpx
 
-    r = httpx.post(
-        f"{BASE}{path}",
-        json=body,
-        headers={"x-api-key": os.environ["AI_ARK_API_KEY"], "content-type": "application/json"},
-        timeout=60,
-    )
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = httpx.post(
+            f"{BASE}{path}",
+            json=body,
+            headers={"x-api-key": os.environ["AI_ARK_API_KEY"], "content-type": "application/json"},
+            timeout=60,
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        # Log the true error server-side (admin can see it in the service logs); raise a bare,
+        # detail-free exception so the provider/URL never travels back to the consultant.
+        logging.getLogger("qwintiq.vault").warning("data provider call failed: %s", e)
+        raise DataUnavailable from None
 
 
 def _mock_total(seed: str, lo: int, hi: int) -> int:
