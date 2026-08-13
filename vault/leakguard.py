@@ -24,14 +24,14 @@ from vault.library import load_framework
 
 _WORD_RE = re.compile(r"[a-z0-9']+")
 
-# Thresholds tuned against real finished outputs (tests/test_leakguard.py): legitimate work
-# scores at or near zero on all three; leaks clear these easily.
+# The filter's job is to catch a WHOLESALE DUMP of the framework, not incidental overlap.
+# Finished work legitimately reuses phrases the framework mandates (e.g. the required
+# "Alternatively, if my last message wasn't relevant" opener), so an absolute "any shared
+# phrase" test false-positives on real output. Instead we measure how MUCH of the output is
+# lifted verbatim: a dump is mostly framework text (high ratio) or lifts many distinct windows.
 _VERBATIM_N = 8
-_NEAR_N = 5            # 5-grams are distinctive enough that a chance collision is rare, so even
-_NEAR_MIN = 2          # a couple of shared 5-word runs signals lightly-edited copy, not reuse of
-                       # an example phrase (frameworks contain example outputs, which 4-grams hit)
-_STRUCT_N = 3
-_STRUCT_MIN = 6        # >= 6 distinct shared framework trigrams = describing the method
+_LEAK_RATIO = 0.22    # >= 22% of the output's 8-word windows lifted verbatim = a dump
+_LEAK_ABS = 14        # ...or 14+ distinct lifted windows outright (catches a long block in long output)
 
 _STOP = frozenset(
     "the a an and or but if then of to in on for with at by from as is are was were be been "
@@ -50,45 +50,26 @@ def _grams(words: list[str], n: int) -> set[tuple[str, ...]]:
     return {tuple(words[i:i + n]) for i in range(max(0, len(words) - n + 1))}
 
 
-def _structural_grams(words: list[str]) -> set[tuple[str, ...]]:
-    """Trigrams that carry at least two non-stopword tokens — the framework's distinctive
-    phrasing, not generic English glue."""
-    out = set()
-    for i in range(max(0, len(words) - _STRUCT_N + 1)):
-        g = tuple(words[i:i + _STRUCT_N])
-        if sum(1 for w in g if w not in _STOP and len(w) > 2) >= 2:
-            out.add(g)
-    return out
+_CACHE: dict[str, set] = {}
 
 
-_CACHE: dict[str, dict] = {}
-
-
-def _framework_grams(name: str) -> dict:
+def _framework_grams(name: str) -> set:
     if name not in _CACHE:
-        w = _words(load_framework(name))
-        _CACHE[name] = {
-            "verbatim": _grams(w, _VERBATIM_N),
-            "near": _grams(w, _NEAR_N),
-            "struct": _structural_grams(w),
-        }
+        _CACHE[name] = _grams(_words(load_framework(name)), _VERBATIM_N)
     return _CACHE[name]
 
 
 def inspect(output: str, framework_name: str) -> tuple[bool, str, dict]:
-    """Return (leaked, reason, scores). Deterministic; safe to run on every response."""
+    """Return (leaked, reason, scores). Deterministic; safe to run on every response.
+    Flags only a wholesale verbatim dump — a high share, or a large count, of 8-word windows
+    lifted straight from the framework. Incidental reuse of mandated phrasing passes."""
     fw = _framework_grams(framework_name)
-    ow = _words(output)
-    verbatim = len(_grams(ow, _VERBATIM_N) & fw["verbatim"])
-    near = len(_grams(ow, _NEAR_N) & fw["near"])
-    struct = len(_structural_grams(ow) & fw["struct"])
-    scores = {"verbatim": verbatim, "near": near, "struct": struct}
-    if verbatim >= 1:
-        return True, "verbatim", scores
-    if near >= _NEAR_MIN:
-        return True, "near_verbatim", scores
-    if struct >= _STRUCT_MIN:
-        return True, "structural", scores
+    ow = _grams(_words(output), _VERBATIM_N)
+    shared = len(ow & fw)
+    ratio = shared / max(1, len(ow))
+    scores = {"shared_windows": shared, "output_windows": len(ow), "ratio": round(ratio, 3)}
+    if shared >= _LEAK_ABS or ratio >= _LEAK_RATIO:
+        return True, "verbatim_dump", scores
     return False, "", scores
 
 

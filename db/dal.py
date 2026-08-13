@@ -357,14 +357,15 @@ def set_secret(name: str, plaintext: str) -> None:
 
 def get_secret(name: str) -> str | None:
     """Admin-set key (decrypted) if present, else the host env var, else None. This is the
-    single source every key lookup goes through, so /admin overrides env with no code change."""
-    row = q("select value from settings where name=?", (name,), fetch="one")
-    if row:
-        try:
+    single source every key lookup goes through, so /admin overrides env with no code change.
+    Any DB hiccup (e.g. table not yet created) falls back to env rather than throwing — a key
+    lookup must never crash a skill call."""
+    try:
+        row = q("select value from settings where name=?", (name,), fetch="one")
+        if row:
             return _fernet().decrypt(row["value"].encode()).decode()
-        except Exception:
-            # SECRET_KEY rotated or corrupt token — fall back to env, admin can re-enter.
-            pass
+    except Exception:
+        pass  # missing table / rotated SECRET_KEY / corrupt token -> fall back to env
     return os.environ.get(name) or None
 
 
@@ -374,8 +375,11 @@ def clear_secret(name: str) -> None:
 
 def secret_status(name: str) -> str:
     """For the admin UI. Never returns the key itself — only where it's coming from."""
-    if q("select name from settings where name=?", (name,), fetch="one"):
-        return "managed_here"
+    try:
+        if q("select name from settings where name=?", (name,), fetch="one"):
+            return "managed_here"
+    except Exception:
+        pass
     if os.environ.get(name):
         return "from_env"
     return "not_set"

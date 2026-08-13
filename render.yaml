@@ -38,5 +38,6 @@ services:
         value: Aliyah Harith
       - key: VAULT_MODEL
         value: claude-sonnet-5
-      - key: VAULT_SEMANTIC_GUARD    # belt-and-suspenders: catch fluent-paraphrase leaks (Haiku)
-        value: "1"
+      - key: VAULT_SEMANTIC_GUARD    # optional extra leak check via a 2nd model call. OFF by
+        value: "0"                    # default: it can false-refuse legitimate output. The input
+                                      # guard + verbatim filter + hardening prompt are the defence.

@@ -62,6 +62,7 @@ app = Starlette(
         Route("/admin/settings", panel.settings),
         Route("/admin/settings/set", panel.settings_set, methods=["POST"]),
         Route("/admin/settings/clear", panel.settings_clear, methods=["POST"]),
+        Route("/admin/settings/test", panel.settings_test, methods=["POST"]),
         Route("/admin", panel.panel),
         Mount("/", app=oauth.AuthGate(mcp.streamable_http_app())),
     ],

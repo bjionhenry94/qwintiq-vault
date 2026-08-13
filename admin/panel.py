@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import html
+import json
 import os
 import secrets
 import time
@@ -286,16 +287,7 @@ _STAT = {"managed_here": ('<span class="stat on">Set · saved here</span>', "Sav
          "not_set": ('<span class="stat off">Not set</span>', "")}
 
 
-async def settings(request: Request):
-    if not _admin(request):
-        return RedirectResponse("/admin/login", status_code=302)
-    saved = request.query_params.get("saved", "")
-    cleared = request.query_params.get("cleared", "")
-    flash = ""
-    if saved:
-        flash = f'<div class="notice"><strong>Saved.</strong> {html.escape(saved)} is set and encrypted. It takes effect on the next request.</div>'
-    elif cleared:
-        flash = f'<div class="notice"><strong>Cleared.</strong> {html.escape(cleared)} removed. It now falls back to the host config (or demo mode).</div>'
+def _settings_page(request: Request, flash: str = "") -> HTMLResponse:
     rows = ""
     for name, label, desc in _MANAGED_KEYS:
         status = dal.secret_status(name)
@@ -316,9 +308,63 @@ async def settings(request: Request):
 <h1>Settings</h1>
 <p class="sub">The keys the vault uses to do its work. They're stored encrypted, used only inside the vault, and never shown to consultants.</p>
 {flash}
-<div class="card"><h2>API keys</h2>{rows}</div>
+<div class="card"><h2>API keys</h2>{rows}
+<div class="keyrow"><div class="meta"><h3>Check it works</h3>
+<div class="desc">Runs a tiny live test with your saved keys and shows the result here — so you can
+confirm a key is valid without guessing.</div></div>
+<form method="post" action="/admin/settings/test"><button class="primary">Test the AI engine</button></form></div>
+</div>
 <p class="sub" style="font-size:13px">Keys are encrypted before they're saved, so they can't be read straight from the database. You'll never see a key again after saving — enter a new value to change it, or Clear to remove it.</p>
 </main>""", "Settings — Qwintiq")
+
+
+async def settings(request: Request):
+    if not _admin(request):
+        return RedirectResponse("/admin/login", status_code=302)
+    saved = request.query_params.get("saved", "")
+    cleared = request.query_params.get("cleared", "")
+    flash = ""
+    if saved:
+        flash = f'<div class="notice"><strong>Saved.</strong> {html.escape(saved)} is set and encrypted. It takes effect on the next request.</div>'
+    elif cleared:
+        flash = f'<div class="notice"><strong>Cleared.</strong> {html.escape(cleared)} removed. It now falls back to the host config (or demo mode).</div>'
+    return _settings_page(request, flash)
+
+
+async def settings_test(request: Request):
+    if not _admin(request):
+        return RedirectResponse("/admin/login", status_code=302)
+    from vault import engine
+    # 1. Can we reach the AI model with the saved key?
+    provider = engine._provider()
+    if provider not in ("anthropic", "openai"):
+        key_line = ('No AI key is set, so skills run in <strong>demo mode</strong> (placeholder output). '
+                    'Add a ChatGPT or Claude key above for real output.')
+        ok = None
+    else:
+        try:
+            reply = engine._chat("You are a connectivity check.", "Reply with exactly: OK", 5)
+            key_line = f'<strong>{html.escape(provider.title())} key works ✓</strong> — the model replied and is ready.'
+            ok = True
+        except Exception as e:
+            key_line = (f'<strong>The {html.escape(provider.title())} key was rejected ✗</strong> — '
+                        f'{html.escape(type(e).__name__)}: {html.escape(str(e)[:200])}')
+            ok = False
+    # 2. Does a real sample brief come back as finished work (not a refused guardrail)?
+    skill_line = ""
+    if ok:
+        sample = engine.run_framework("copywriter", json.dumps({
+            "problem": "unpredictable lead flow", "outcome": "a steady pipeline of meetings",
+            "risk_reversal": "pay per meeting held", "service": "done-for-you appointment setting"}),
+            None, "admin_test")
+        if "returns finished work only" in sample or "didn't go through" in sample:
+            skill_line = ('<br><br>But a sample skill run came back <strong>blocked by a guardrail</strong>. '
+                          'Tell your developer — the leak filter may be too strict.')
+        else:
+            skill_line = ('<br><br>Sample skill output (first lines):<br>'
+                          f'<span style="font-family:var(--mono);font-size:12.5px">{html.escape(sample[:220])}…</span>')
+    banner = f'<div class="notice">{key_line}{skill_line}</div>'
+    return _settings_page(request, banner)
 
 
 async def settings_set(request: Request):
