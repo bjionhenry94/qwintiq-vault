@@ -84,18 +84,9 @@ _SEMANTIC_SYS = (
 def semantic_leak(output: str) -> bool:
     if os.environ.get("VAULT_SEMANTIC_GUARD", "") not in ("1", "true", "on"):
         return False
-    if _provider() != "anthropic":
+    if _provider() not in ("anthropic", "openai"):  # needs a real model; skip in mock/tests
         return False
-    from anthropic import Anthropic
-
-    client = Anthropic()
-    msg = client.messages.create(
-        model=os.environ.get("VAULT_GUARD_MODEL", "claude-haiku-4-5-20251001"),
-        max_tokens=5,
-        system=_SEMANTIC_SYS,
-        messages=[{"role": "user", "content": output[:6000]}],
-    )
-    verdict = "".join(b.text for b in msg.content if b.type == "text").strip().upper()
+    verdict = _chat(_SEMANTIC_SYS, output[:6000], 8).strip().upper()
     return verdict.startswith("LEAK")
 
 
@@ -110,8 +101,57 @@ _HARDENING = (
 )
 
 
+def _secret(name: str) -> str | None:
+    """Admin-set key (in /admin/settings, encrypted in the DB) takes precedence over host env."""
+    from db import dal
+
+    return dal.get_secret(name)
+
+
+def _anthropic_key() -> str | None:
+    return _secret("ANTHROPIC_API_KEY")
+
+
+def _openai_key() -> str | None:
+    return _secret("OPENAI_API_KEY")
+
+
 def _provider() -> str:
-    return os.environ.get("VAULT_LLM", "anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "mock")
+    """Which engine runs the skills. Explicit VAULT_LLM wins (incl. 'mock'/'leaky' for tests);
+    otherwise use whichever real key is set — Anthropic preferred, then OpenAI (a ChatGPT key),
+    else mock. So dropping either key into /admin flips skills from placeholder to real output."""
+    explicit = os.environ.get("VAULT_LLM")
+    if explicit:
+        return explicit
+    if _anthropic_key():
+        return "anthropic"
+    if _openai_key():
+        return "openai"
+    return "mock"
+
+
+def _chat(system: str, user: str, max_tokens: int) -> str:
+    """One dispatcher for both model providers. The framework is always the system prompt (never
+    echoed), the task is the user message. Used for generation and the semantic leak check."""
+    if _provider() == "openai":
+        from openai import OpenAI  # lazy
+
+        client = OpenAI(api_key=_openai_key())
+        resp = client.chat.completions.create(
+            model=os.environ.get("VAULT_OPENAI_MODEL", "gpt-4o-mini"),
+            max_tokens=max_tokens,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        )
+        return resp.choices[0].message.content or ""
+    from anthropic import Anthropic  # lazy
+
+    client = Anthropic(api_key=_anthropic_key())
+    msg = client.messages.create(
+        model=os.environ.get("VAULT_MODEL", "claude-sonnet-5"),
+        max_tokens=max_tokens, system=system,
+        messages=[{"role": "user", "content": user}],
+    )
+    return "".join(b.text for b in msg.content if b.type == "text")
 
 
 def _generate(framework_name: str, task: str) -> str:
@@ -125,16 +165,7 @@ def _generate(framework_name: str, task: str) -> str:
         from vault.mock_llm import mock_generate
 
         return mock_generate(framework_name, task)
-    from anthropic import Anthropic  # lazy: only needed in prod
-
-    client = Anthropic()
-    msg = client.messages.create(
-        model=os.environ.get("VAULT_MODEL", "claude-sonnet-5"),
-        max_tokens=4096,
-        system=_HARDENING + load_framework(framework_name),
-        messages=[{"role": "user", "content": task}],
-    )
-    return "".join(b.text for b in msg.content if b.type == "text")
+    return _chat(_HARDENING + load_framework(framework_name), task, 4096)
 
 
 def run_framework(framework_name: str, task: str, consultant_id: str | None, tool: str,

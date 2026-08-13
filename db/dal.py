@@ -113,6 +113,8 @@ create table if not exists framework_state (
 create table if not exists extraction_log (
     id text primary key, consultant_id text, tool text not null, reason text not null,
     input_excerpt text, created_at text not null);
+create table if not exists settings (
+    name text primary key, value text not null, updated_at text not null);
 """
 
 
@@ -326,6 +328,57 @@ def state_list(consultant_id: str | None, kind: str) -> list[dict]:
 def log_extraction(consultant_id: str | None, tool: str, reason: str, excerpt: str) -> None:
     q("insert into extraction_log (id, consultant_id, tool, reason, input_excerpt, created_at)"
       " values (?,?,?,?,?,?)", (uid(), consultant_id, tool, reason, excerpt[:400], _now()))
+
+
+# ---------- Secrets (admin-managed API keys, encrypted at rest) ----------
+# API keys the admin sets from /admin/settings are stored ENCRYPTED, keyed by a value derived
+# from SECRET_KEY (which lives in the host env, never in the DB). So a database dump on its own
+# reveals nothing usable — you'd also need SECRET_KEY. The plaintext key only exists in memory,
+# server-side, at the moment a data/LLM call is made.
+
+def _fernet():
+    import base64
+    import hashlib
+
+    from cryptography.fernet import Fernet
+
+    secret = os.environ.get("SECRET_KEY") or "dev-secret-change-in-prod"
+    return Fernet(base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest()))
+
+
+def set_secret(name: str, plaintext: str) -> None:
+    token = _fernet().encrypt(plaintext.encode()).decode()
+    row = q("select name from settings where name=?", (name,), fetch="one")
+    if row:
+        q("update settings set value=?, updated_at=? where name=?", (token, _now(), name))
+    else:
+        q("insert into settings (name, value, updated_at) values (?,?,?)", (name, token, _now()))
+
+
+def get_secret(name: str) -> str | None:
+    """Admin-set key (decrypted) if present, else the host env var, else None. This is the
+    single source every key lookup goes through, so /admin overrides env with no code change."""
+    row = q("select value from settings where name=?", (name,), fetch="one")
+    if row:
+        try:
+            return _fernet().decrypt(row["value"].encode()).decode()
+        except Exception:
+            # SECRET_KEY rotated or corrupt token — fall back to env, admin can re-enter.
+            pass
+    return os.environ.get(name) or None
+
+
+def clear_secret(name: str) -> None:
+    q("delete from settings where name=?", (name,))
+
+
+def secret_status(name: str) -> str:
+    """For the admin UI. Never returns the key itself — only where it's coming from."""
+    if q("select name from settings where name=?", (name,), fetch="one"):
+        return "managed_here"
+    if os.environ.get(name):
+        return "from_env"
+    return "not_set"
 
 
 def purge_expired(keep_log_days: int = 30) -> None:

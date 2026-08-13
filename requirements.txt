@@ -6,8 +6,11 @@ httpx>=0.27
 # Starlette is a DIRECT dependency (server.py/panel.py/oauth.py import it) — pin explicitly
 # rather than relying on it arriving transitively via mcp.
 starlette>=0.37,<2
-# Server-side execution (finished-output-only decision, 2026-08-12): the vault DOES call
-# an LLM now. Key comes from ANTHROPIC_API_KEY (Qwintiq's account at deploy).
+# Server-side execution (finished-output-only): the vault runs the skills through a model.
+# Use EITHER an Anthropic key OR an OpenAI (ChatGPT) key — set in /admin or as an env var.
 anthropic>=0.40
+openai>=1.40
+# Encrypts admin-set API keys at rest in the DB (Fernet, keyed off SECRET_KEY).
+cryptography>=42
 # Prod DB (Supabase Postgres). Dev falls back to SQLite with no extra install.
 psycopg[binary]>=3.1

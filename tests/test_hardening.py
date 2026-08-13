@@ -52,6 +52,15 @@ def main():
         codes.append(rr.status_code)
     check("admin login locks out after repeated failures", 429 in codes)
 
+    # 5. Settings/keys page: admin-only, and it must NEVER show a saved key back.
+    anon = httpx.get(BASE + "/admin/settings", follow_redirects=False)
+    check("settings page requires admin", anon.status_code in (302, 303))
+    ac.post("/admin/settings/set", data={"name": "AI_ARK_API_KEY", "value": "super-secret-key-value-zzz"})
+    page = ac.get("/admin/settings").text
+    check("saved key is never shown on the settings page", "super-secret-key-value-zzz" not in page)
+    check("settings page shows a 'set' status instead", "Set" in page)
+    ac.post("/admin/settings/clear", data={"name": "AI_ARK_API_KEY"})  # cleanup so other calls stay mock
+
     failed = [n for n, ok, _ in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
     sys.exit(1 if failed else 0)

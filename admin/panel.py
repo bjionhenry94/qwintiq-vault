@@ -92,6 +92,16 @@ header .brand{font-weight:700;letter-spacing:.01em;font-size:19px;color:#fff}
 header .brand::after{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--purple);margin-left:2px}
 header a{color:rgba(255,255,255,.72);font-size:13px;text-decoration:none;font-weight:600}
 header a:hover{color:#fff}
+.navlinks{display:flex;gap:20px;align-items:center}
+.keyrow{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;padding:16px 0;border-top:1px solid var(--line)}
+.keyrow:first-of-type{border-top:0}
+.keyrow .meta{flex:1;min-width:220px}.keyrow h3{font-size:15px;font-weight:650;margin-bottom:2px}
+.keyrow .desc{color:var(--ink-soft);font-size:13px;line-height:1.5}
+.keyrow form{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.keyrow input{min-width:220px}
+.stat{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:4px 10px;border-radius:99px;white-space:nowrap}
+.stat.on{background:var(--ok-bg);color:var(--ok)}.stat.env{background:color-mix(in srgb,var(--purple) 12%,var(--card));color:var(--purple);border:1px solid color-mix(in srgb,var(--purple) 26%,var(--line))}
+.stat.off{background:var(--cream);color:var(--ink-soft)}
 main{max-width:820px;margin:38px auto;padding:0 20px}
 h1{font-size:26px;font-weight:700;margin-bottom:4px;letter-spacing:-.01em}
 .sub{color:var(--ink-soft);font-size:14.5px;margin-bottom:26px;line-height:1.5}
@@ -242,7 +252,7 @@ async def panel(request: Request):
              '<div class="empty">No consultants yet.<br>Add your first one above — '
              'they get access in seconds.</div>')
     return _page(f"""
-<header><span class="brand">Qwintiq</span><a href="/admin/logout">Sign out</a></header>
+<header><span class="brand">Qwintiq</span><span class="navlinks"><a href="/admin/settings">Settings</a><a href="/admin/logout">Sign out</a></span></header>
 <main>
 <h1>Control panel</h1>
 <p class="sub">Add or remove consultants, and switch their access key on or off. That's all this does — on purpose.</p>
@@ -258,6 +268,84 @@ temporary password to send them. Nothing to install on their side beyond the Qwi
 </div>
 <div class="card"><h2>Your consultants</h2>{table}</div>
 </main>""")
+
+
+# Keys the admin can manage from Settings. Each is stored ENCRYPTED in the DB (dal.set_secret)
+# and used only server-side; the value is never shown back.
+_MANAGED_KEYS = [
+    ("OPENAI_API_KEY", "ChatGPT (OpenAI) key",
+     "Runs the copy & icebreaker skills. Set either this or the Anthropic key — whichever you have."),
+    ("ANTHROPIC_API_KEY", "Claude (Anthropic) key",
+     "Alternative engine for the copy & icebreaker skills. Only one AI key is needed."),
+    ("AI_ARK_API_KEY", "AI-Ark data key",
+     "Powers market-sizing / list-building. Leave empty to run those in safe demo mode."),
+]
+
+_STAT = {"managed_here": ('<span class="stat on">Set · saved here</span>', "Saved (encrypted). Enter a new value to replace it."),
+         "from_env": ('<span class="stat env">Set · from host</span>', "Currently coming from the host config. Setting one here overrides it."),
+         "not_set": ('<span class="stat off">Not set</span>', "")}
+
+
+async def settings(request: Request):
+    if not _admin(request):
+        return RedirectResponse("/admin/login", status_code=302)
+    saved = request.query_params.get("saved", "")
+    cleared = request.query_params.get("cleared", "")
+    flash = ""
+    if saved:
+        flash = f'<div class="notice"><strong>Saved.</strong> {html.escape(saved)} is set and encrypted. It takes effect on the next request.</div>'
+    elif cleared:
+        flash = f'<div class="notice"><strong>Cleared.</strong> {html.escape(cleared)} removed. It now falls back to the host config (or demo mode).</div>'
+    rows = ""
+    for name, label, desc in _MANAGED_KEYS:
+        status = dal.secret_status(name)
+        pill, hint = _STAT[status]
+        clear_btn = (f'<form class="inline" method="post" action="/admin/settings/clear">'
+                     f'<input type="hidden" name="name" value="{name}">'
+                     f'<button class="quiet">Clear</button></form>' if status == "managed_here" else "")
+        rows += (
+            f'<div class="keyrow"><div class="meta"><h3>{html.escape(label)} {pill}</h3>'
+            f'<div class="desc">{html.escape(desc)}{(" " + html.escape(hint)) if hint else ""}</div></div>'
+            f'<form method="post" action="/admin/settings/set">'
+            f'<input type="hidden" name="name" value="{name}">'
+            f'<input type="password" name="value" placeholder="Paste key…" autocomplete="off" required>'
+            f'<button class="primary">Save</button></form>{clear_btn}</div>')
+    return _page(f"""
+<header><span class="brand">Qwintiq</span><span class="navlinks"><a href="/admin">Control panel</a><a href="/admin/logout">Sign out</a></span></header>
+<main>
+<h1>Settings</h1>
+<p class="sub">The keys the vault uses to do its work. They're stored encrypted, used only inside the vault, and never shown to consultants.</p>
+{flash}
+<div class="card"><h2>API keys</h2>{rows}</div>
+<p class="sub" style="font-size:13px">Keys are encrypted before they're saved, so they can't be read straight from the database. You'll never see a key again after saving — enter a new value to change it, or Clear to remove it.</p>
+</main>""", "Settings — Qwintiq")
+
+
+async def settings_set(request: Request):
+    if not _admin(request):
+        return RedirectResponse("/admin/login", status_code=302)
+    form = await request.form()
+    name = str(form.get("name", ""))
+    value = str(form.get("value", "")).strip()
+    valid = {k for k, _, _ in _MANAGED_KEYS}
+    if name in valid and value:
+        dal.set_secret(name, value)
+        label = next(lbl for k, lbl, _ in _MANAGED_KEYS if k == name)
+        return RedirectResponse(f"/admin/settings?saved={label}", status_code=302)
+    return RedirectResponse("/admin/settings", status_code=302)
+
+
+async def settings_clear(request: Request):
+    if not _admin(request):
+        return RedirectResponse("/admin/login", status_code=302)
+    form = await request.form()
+    name = str(form.get("name", ""))
+    valid = {k for k, _, _ in _MANAGED_KEYS}
+    if name in valid:
+        dal.clear_secret(name)
+        label = next(lbl for k, lbl, _ in _MANAGED_KEYS if k == name)
+        return RedirectResponse(f"/admin/settings?cleared={label}", status_code=302)
+    return RedirectResponse("/admin/settings", status_code=302)
 
 
 async def add(request: Request):

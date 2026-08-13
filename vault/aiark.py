@@ -22,8 +22,16 @@ class DataUnavailable(Exception):
     consultant through an error. The real cause is logged server-side for the admin only."""
 
 
+def _key() -> str | None:
+    """The AI-ARK key: admin-set (in /admin/settings, encrypted in the DB) takes precedence over
+    the host env var."""
+    from db import dal
+
+    return dal.get_secret("AI_ARK_API_KEY")
+
+
 def _mock() -> bool:
-    return os.environ.get("VAULT_AIARK", "").lower() == "mock" or not os.environ.get("AI_ARK_API_KEY")
+    return os.environ.get("VAULT_AIARK", "").lower() == "mock" or not _key()
 
 
 def _post(path: str, body: dict) -> dict:
@@ -33,7 +41,7 @@ def _post(path: str, body: dict) -> dict:
         r = httpx.post(
             f"{BASE}{path}",
             json=body,
-            headers={"x-api-key": os.environ["AI_ARK_API_KEY"], "content-type": "application/json"},
+            headers={"x-api-key": _key(), "content-type": "application/json"},
             timeout=60,
         )
         r.raise_for_status()
