@@ -223,6 +223,14 @@ explanation. Response > impressiveness.
 
 # REQUIRED OUTPUT FORMAT (return EXACTLY this — no commentary before or after)
 
+Two hard rules for filling the templates:
+1. The line `{{icebreaker}}` appears **verbatim, exactly as written**, as the first body line of
+   Message 1 in BOTH sequences. It is a merge variable filled per lead at upload — never replace
+   it with a written-out opener or problem line.
+2. Every `[filled …]` slot must produce a sentence that reads as **natural English**. Rephrase
+   the brief's wording as needed to make the sentence grammatical — never paste a clause in raw
+   if it breaks the sentence around it.
+
 📞 **SEQUENCE 1 — Service Pitch (go straight for the call)** 📞
 
 **Subject (email send only):** **[subject]**
@@ -231,7 +239,7 @@ explanation. Response > impressiveness.
 
 Hi {{firstName}},
 
-**[filled icebreaker]**
+{{icebreaker}}
 
 If we could **[filled problem]** by **[filled service / outcome]**, **[filled risk reversal]**, **[filled CTA]?**
 
@@ -269,7 +277,9 @@ Just wanted to check in one last time as to whether what I shared was relevant.
 
 Hi {{firstName}},
 
-**[filled icebreaker / problem statement]**
+{{icebreaker}}
+
+**[filled generalised problem statement]**
 
 **[filled offer]**
 

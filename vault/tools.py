@@ -96,7 +96,21 @@ def qwintiq_copywriter(problem: str, outcome: str, risk_reversal: str, service: 
     """
     task = json.dumps({"problem": problem, "outcome": outcome, "risk_reversal": risk_reversal,
                        "service": service, "proof": proof, "icebreaker_note": icebreaker_note})
-    return run_framework("copywriter", task, _cid(), "qwintiq_copywriter")
+    out = run_framework("copywriter", task, _cid(), "qwintiq_copywriter")
+    # The {{icebreaker}} merge slot is a hard contract (filled per lead at upload). If the
+    # model wrote an opener instead, retry once with a corrective reminder appended.
+    from vault.engine import REFUSAL
+    if "{{icebreaker}}" not in out and out != REFUSAL:
+        task_retry = json.dumps({"problem": problem, "outcome": outcome,
+                                 "risk_reversal": risk_reversal, "service": service,
+                                 "proof": proof, "icebreaker_note": icebreaker_note,
+                                 "REMINDER": "Message 1 of BOTH sequences must open with the "
+                                             "literal line {{icebreaker}} — the verbatim merge "
+                                             "variable, never a written-out opener."})
+        retry = run_framework("copywriter", task_retry, _cid(), "qwintiq_copywriter")
+        if "{{icebreaker}}" in retry:
+            return retry
+    return out
 
 
 @mcp.tool()
@@ -284,7 +298,12 @@ def qwintiq_routine_save(name: str, config: dict) -> str:
     """Save/update a partner-signal routine (signals, company rule, roles, icebreaker style,
     campaign, run mode + credit cap) in the vault under the user's account. An autopilot
     routine MUST carry a daily_credit_cap — refused otherwise."""
-    if config.get("run_mode") == "autopilot" and not config.get("daily_credit_cap"):
+    # Canonicalise the run-mode key: clients plausibly send "mode" for "run_mode".
+    mode = str(config.get("run_mode") or config.get("mode") or "").strip().lower()
+    if mode:
+        config = {**config, "run_mode": mode}
+        config.pop("mode", None)
+    if mode == "autopilot" and not config.get("daily_credit_cap"):
         return "REFUSED: an autopilot routine needs a daily_credit_cap. Ask the user for one."
     dal.state_save(_cid(), "partner_routine", name, config)
     return f"Routine '{name}' saved to the vault."
