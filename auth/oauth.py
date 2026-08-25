@@ -79,11 +79,12 @@ async def register(request: Request):
 
 _LOGIN_PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in — Qwintiq</title><style>{css}</style></head><body>
+<link rel="icon" type="image/jpeg" href="/static/favicon.jpeg">
+<title>Sign in — QwintiQ</title><style>{css}</style></head><body>
 <main class="card">
-  <div class="brand">Qwintiq</div>
+  <img class="logo" src="/static/logo.png" alt="QwintiQ Consulting">
   <h1>Sign in</h1>
-  <p class="sub">Use the email and password Qwintiq gave you.</p>
+  <p class="sub">Use the email and password QwintiQ gave you.</p>
   {error}
   <form method="post" action="/authorize">
     {hidden}
@@ -91,14 +92,15 @@ _LOGIN_PAGE = """<!doctype html><html><head><meta charset="utf-8">
     <label>Password<input type="password" name="password" required autocomplete="current-password"></label>
     <button type="submit">Sign in</button>
   </form>
-  <p class="foot">Locked out? Ask your Qwintiq admin — access is managed centrally.</p>
+  <p class="foot">Locked out? Ask your QwintiQ admin — access is managed centrally.</p>
 </main></body></html>"""
 
 _SETPW_PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Set your password — Qwintiq</title><style>{css}</style></head><body>
+<link rel="icon" type="image/jpeg" href="/static/favicon.jpeg">
+<title>Set your password — QwintiQ</title><style>{css}</style></head><body>
 <main class="card">
-  <div class="brand">Qwintiq</div>
+  <img class="logo" src="/static/logo.png" alt="QwintiQ Consulting">
   <h1>Set your password</h1>
   <p class="sub">First time in — choose a password you'll use from now on. Your temporary
   one won't work again.</p>
@@ -135,9 +137,7 @@ background-image:radial-gradient(circle at 50% -12%, color-mix(in srgb,var(--pur
 .card{background:var(--card);border-radius:20px;padding:44px 38px;max-width:410px;width:92%;
 border-top:4px solid var(--brand);box-shadow:0 10px 40px rgba(52,25,72,.12)}
 @media(prefers-color-scheme:dark){.card{box-shadow:0 10px 40px rgba(0,0,0,.5)}}
-.brand{font-weight:700;letter-spacing:.02em;font-size:22px;color:var(--brand);margin-bottom:18px}
-.brand::after{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;
-background:var(--purple);margin-left:2px;vertical-align:baseline}
+.logo{width:210px;max-width:70%;height:auto;display:block;margin-bottom:16px}
 h1{font-size:25px;font-weight:700;margin-bottom:6px;letter-spacing:-.01em}
 .sub{color:var(--ink-soft);font-size:14.5px;margin-bottom:24px;line-height:1.5}
 label{display:block;font-size:13px;font-weight:600;margin-bottom:15px;color:var(--ink)}
@@ -195,7 +195,7 @@ async def authorize(request: Request):
     redirect_uri = params.get("redirect_uri", "")
     if not client or redirect_uri not in client["redirect_uris"]:
         return HTMLResponse(_login_html(params, "This sign-in link is not valid. "
-                                        "Re-add the Qwintiq connector and try again."), status_code=400)
+                                        "Re-add the QwintiQ connector and try again."), status_code=400)
 
     email = params.get("email", "").lower().strip()
     ip = ratelimit.client_ip(request)
@@ -211,7 +211,7 @@ async def authorize(request: Request):
                                         "has been switched off."), status_code=401)
     if not dal.active_key(consultant["id"]):
         return HTMLResponse(_login_html(params, "Your account exists but no access key is "
-                                        "assigned. Ask your Qwintiq admin to assign one."), status_code=403)
+                                        "assigned. Ask your QwintiQ admin to assign one."), status_code=403)
 
     # First sign-in: force the consultant to replace the one-time temp password before any
     # token is issued, so the temp password is never a standing credential.
@@ -274,7 +274,7 @@ class AuthGate:
             www = (f'Bearer resource_metadata='
                    f'"{proto}://{host}/.well-known/oauth-protected-resource"')
             body = json.dumps({"error": "unauthorized",
-                               "error_description": "Sign in to the Qwintiq vault to use it."}).encode()
+                               "error_description": "Sign in to the QwintiQ vault to use it."}).encode()
             await send({"type": "http.response.start", "status": 401,
                         "headers": [(b"content-type", b"application/json"),
                                     (b"www-authenticate", www.encode())]})

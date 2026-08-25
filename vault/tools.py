@@ -31,10 +31,10 @@ _log = logging.getLogger("qwintiq.vault")
 # tool …: Client error '401' for url 'https://api.ai-ark.com/…'") — leaking the data provider,
 # endpoints, the model behind the skills, DB errors, etc. Every tool is wrapped so the real cause
 # is logged server-side (admin only) and the consultant sees a generic, internals-free message.
-_SAFE_ERROR = ("Something didn't go through on the Qwintiq side just now. Please try again in a "
-               "moment — if it keeps happening, let your Qwintiq admin know. Nothing to fix on your end.")
+_SAFE_ERROR = ("Something didn't go through on the QwintiQ side just now. Please try again in a "
+               "moment — if it keeps happening, let your QwintiQ admin know. Nothing to fix on your end.")
 _DATA_ERROR = ("The data lookup is temporarily unavailable. Please try again shortly — if it "
-               "persists, your Qwintiq admin needs to check the vault's data connection.")
+               "persists, your QwintiQ admin needs to check the vault's data connection.")
 
 
 def _safe(fn):
@@ -80,7 +80,7 @@ def _cid() -> str | None:
 @mcp.tool()
 @_safe
 def ping() -> str:
-    """Health check. Confirms the Qwintiq vault is reachable and responding."""
+    """Health check. Confirms the QwintiQ vault is reachable and responding."""
     return "qwintiq-vault: online"
 
 
@@ -88,7 +88,7 @@ def ping() -> str:
 @_safe
 def qwintiq_copywriter(problem: str, outcome: str, risk_reversal: str, service: str,
                        proof: str = "", icebreaker_note: str = "") -> str:
-    """Write Qwintiq outreach copy — the finished email + LinkedIn sequences, Lemlist-ready.
+    """Write QwintiQ outreach copy — the finished email + LinkedIn sequences, Lemlist-ready.
 
     Collect the brief from the user first (the problem the prospect has, the outcome on
     offer, the risk reversal / guarantee, what the service is, optional proof), then call
@@ -218,7 +218,7 @@ def qwintiq_list_export(kind: str, filters: dict, max_rows: int, confirmation_ph
 @_safe
 def qwintiq_partner_signals(routine_name: str = "", candidate_companies: list[dict] | None = None,
                             confirmation_phrase: str = "") -> str:
-    """Run Qwintiq's daily partner/PR signal routine.
+    """Run QwintiQ's daily partner/PR signal routine.
 
     Call with no arguments to see the saved routines. Call with routine_name to run one:
     pass candidate_companies (name + website + what happened, from your own free web
@@ -267,7 +267,7 @@ def qwintiq_partner_signals(routine_name: str = "", candidate_companies: list[di
 @mcp.tool()
 @_safe
 def qwintiq_setup_list() -> str:
-    """List the user's saved icebreaker setups (plus the shared Qwintiq default)."""
+    """List the user's saved icebreaker setups (plus the shared QwintiQ default)."""
     return json.dumps([{"name": s["name"], "shared": s["consultant_id"] is None,
                         "updated_at": s["updated_at"]}
                        for s in dal.state_list(_cid(), "icebreaker_setup")])
@@ -286,7 +286,7 @@ def qwintiq_setup_save(name: str, config: dict) -> str:
 @mcp.tool()
 @_safe
 def qwintiq_routine_list() -> str:
-    """List the user's saved partner-signal routines (plus shared Qwintiq defaults)."""
+    """List the user's saved partner-signal routines (plus shared QwintiQ defaults)."""
     return json.dumps([{"name": s["name"], "shared": s["consultant_id"] is None,
                         "updated_at": s["updated_at"]}
                        for s in dal.state_list(_cid(), "partner_routine")])

@@ -88,11 +88,10 @@ CSS = """
 --ok:#57c48c;--ok-bg:#13291f;--bad:#f0938c;--bad-bg:#341620}
 *{box-sizing:border-box;margin:0}
 body{font-family:var(--round);background:var(--paper);color:var(--ink);min-height:100vh}
-header{background:var(--header);color:#fff;padding:17px 28px;display:flex;align-items:center;justify-content:space-between}
-header .brand{font-weight:700;letter-spacing:.01em;font-size:19px;color:#fff}
-header .brand::after{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--purple);margin-left:2px}
-header a{color:rgba(255,255,255,.72);font-size:13px;text-decoration:none;font-weight:600}
-header a:hover{color:#fff}
+header{background:var(--card);border-bottom:1px solid var(--line);padding:14px 28px;display:flex;align-items:center;justify-content:space-between}
+header .logo{height:44px;width:auto;display:block}
+header a{color:var(--ink-soft);font-size:13px;text-decoration:none;font-weight:600}
+header a:hover{color:var(--brand)}
 .navlinks{display:flex;gap:20px;align-items:center}
 .keyrow{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;padding:16px 0;border-top:1px solid var(--line)}
 .keyrow:first-of-type{border-top:0}
@@ -147,15 +146,15 @@ border-top:4px solid var(--brand);box-shadow:0 10px 40px rgba(52,25,72,.12)}
 .login-card label{display:block;font-size:13px;font-weight:600;margin-bottom:15px;color:var(--ink)}
 .login-card input{display:block;width:100%;margin-top:7px}
 .login-card button{width:100%;padding:13px;margin-top:8px;font-size:15px}
-.login-card .brand{font-weight:700;letter-spacing:.01em;font-size:22px;color:var(--brand);margin-bottom:18px;display:inline-block}
-.login-card .brand::after{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--purple);margin-left:2px}
+.login-card .logo{width:210px;max-width:70%;height:auto;display:block;margin-bottom:16px}
 """
 
 
-def _page(body: str, title: str = "Qwintiq — Control panel", status_code: int = 200) -> HTMLResponse:
+def _page(body: str, title: str = "QwintiQ — Control Panel", status_code: int = 200) -> HTMLResponse:
     return HTMLResponse(
         f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/jpeg" href="/static/favicon.jpeg">
 <title>{title}</title><style>{CSS}</style></head><body>{body}</body></html>""",
         status_code=status_code)
 
@@ -184,13 +183,13 @@ async def admin_login(request: Request):
             error = '<div class="error">Wrong email or password.</div>'
     return _page(f"""
 <div class="login-wrap"><div class="login-card">
-<div class="brand">Qwintiq</div><h1>Control panel</h1>
+<img class="logo" src="/static/logo.png" alt="QwintiQ Consulting"><h1>Control Panel</h1>
 <p class="sub" style="margin:6px 0 22px;color:var(--ink-soft);font-size:14px">Sign in to manage your consultants.</p>
 {error}
 <form method="post"><label>Email<input type="email" name="email" required autofocus></label>
 <label>Password<input type="password" name="password" required></label>
 <button class="primary" type="submit">Sign in</button></form>
-</div></div>""", "Sign in — Qwintiq control panel", status_code=status)
+</div></div>""", "Sign in — QwintiQ Control Panel", status_code=status)
 
 
 async def panel(request: Request):
@@ -206,12 +205,12 @@ async def panel(request: Request):
         email = html.escape(data["email"])
         pw = html.escape(data["pw"])
         invite = html.escape(
-            f"Hi {data['name']}, you've been added to Qwintiq. Here's everything to get set up "
+            f"Hi {data['name']}, you've been added to QwintiQ. Here's everything to get set up "
             f"(takes a minute, one time only):\n\n"
             f"1. Open this page and follow it: {base}/welcome\n"
             f"2. Your sign-in email: {data['email']}\n"
             f"3. Your one-time password: {data['pw']}\n\n"
-            f"That's it — after that you just ask for Qwintiq work as normal.",
+            f"That's it — after that you just ask for QwintiQ work as normal.",
             quote=True)
         notice = (
             f'<div class="notice"><strong>{name} is in.</strong> Send them their temporary '
@@ -253,10 +252,10 @@ async def panel(request: Request):
              '<div class="empty">No consultants yet.<br>Add your first one above — '
              'they get access in seconds.</div>')
     return _page(f"""
-<header><span class="brand">Qwintiq</span><span class="navlinks"><a href="/admin/settings">Settings</a><a href="/admin/logout">Sign out</a></span></header>
+<header><img class="logo" src="/static/logo.png" alt="QwintiQ Consulting"><span class="navlinks"><a href="/admin/settings">Settings</a><a href="/admin/logout">Sign out</a></span></header>
 <main>
-<h1>Control panel</h1>
-<p class="sub">Add or remove consultants, and switch their access key on or off. That's all this does — on purpose.</p>
+<h1>Control Panel</h1>
+<p class="sub">Add or remove consultants and switch access keys on and off.</p>
 {notice}
 <div class="card"><h2>Add a consultant</h2>
 <form method="post" action="/admin/add" class="addrow">
@@ -265,7 +264,7 @@ async def panel(request: Request):
 <button class="primary" type="submit">Add consultant</button>
 </form>
 <p style="color:var(--ink-soft);font-size:13px;margin-top:10px">They get a key automatically and you'll see a one-time
-temporary password to send them. Nothing to install on their side beyond the Qwintiq connector.</p>
+temporary password to send them. Nothing to install on their side beyond the QwintiQ connector.</p>
 </div>
 <div class="card"><h2>Your consultants</h2>{table}</div>
 </main>""")
@@ -303,7 +302,7 @@ def _settings_page(request: Request, flash: str = "") -> HTMLResponse:
             f'<input type="password" name="value" placeholder="Paste key…" autocomplete="off" required>'
             f'<button class="primary">Save</button></form>{clear_btn}</div>')
     return _page(f"""
-<header><span class="brand">Qwintiq</span><span class="navlinks"><a href="/admin">Control panel</a><a href="/admin/logout">Sign out</a></span></header>
+<header><img class="logo" src="/static/logo.png" alt="QwintiQ Consulting"><span class="navlinks"><a href="/admin">Control Panel</a><a href="/admin/logout">Sign out</a></span></header>
 <main>
 <h1>Settings</h1>
 <p class="sub">The keys the vault uses to do its work. They're stored encrypted, used only inside the vault, and never shown to consultants.</p>
@@ -315,7 +314,7 @@ confirm a key is valid without guessing.</div></div>
 <form method="post" action="/admin/settings/test"><button class="primary">Test the AI engine</button></form></div>
 </div>
 <p class="sub" style="font-size:13px">Keys are encrypted before they're saved, so they can't be read straight from the database. You'll never see a key again after saving — enter a new value to change it, or Clear to remove it.</p>
-</main>""", "Settings — Qwintiq")
+</main>""", "Settings — QwintiQ")
 
 
 async def settings(request: Request):
@@ -456,9 +455,9 @@ async def welcome(request: Request):
     No login needed; it's the friendly front door an invite links to."""
     mcp_url = _base_url(request) + "/mcp"
     return _page(f"""
-<header><span class="brand">Qwintiq</span></header>
+<header><img class="logo" src="/static/logo.png" alt="QwintiQ Consulting"></header>
 <main>
-<h1>Welcome to Qwintiq</h1>
+<h1>Welcome to QwintiQ</h1>
 <p class="sub">Three quick steps, once. After this you just ask for your work as normal — nothing to install again.</p>
 <div class="card">
   <div class="step"><div class="n">1</div><div>
@@ -466,35 +465,35 @@ async def welcome(request: Request):
     <p>In Claude, open <b>Settings → Connectors</b>. This is where Claude connects to the tools you use.</p>
   </div></div>
   <div class="step"><div class="n">2</div><div>
-    <h3>Add Qwintiq as a custom connector</h3>
-    <p>Click <b>Add custom connector</b>, paste the Qwintiq address below, and connect. This is the only
+    <h3>Add QwintiQ as a custom connector</h3>
+    <p>Click <b>Add custom connector</b>, paste the QwintiQ address below, and connect. This is the only
     setup step, and you'll only ever do it on day one.</p>
     <div class="urlbox"><code id="connect">{mcp_url}</code>
       <button class="primary" type="button" onclick="cp(document.getElementById('connect').textContent,this)">Copy</button></div>
-    <p class="reassure">It just points Claude at Qwintiq — nothing is downloaded or installed on your computer.</p>
+    <p class="reassure">It just points Claude at QwintiQ — nothing is downloaded or installed on your computer.</p>
   </div></div>
   <div class="step"><div class="n">3</div><div>
-    <h3>Sign in with the details Qwintiq sent you</h3>
-    <p>A Qwintiq sign-in page opens. Enter the email and one-time password from your invite, then choose
+    <h3>Sign in with the details QwintiQ sent you</h3>
+    <p>A QwintiQ sign-in page opens. Enter the email and one-time password from your invite, then choose
     your own password. That's it — you're connected.</p>
   </div></div>
 </div>
 <div class="card">
   <h2>Then just ask, in plain English</h2>
   <p style="color:var(--ink-soft);font-size:14.5px;line-height:1.7">
-    &ldquo;Write Qwintiq copy for a prospect who…&rdquo;<br>
+    &ldquo;Write QwintiQ copy for a prospect who…&rdquo;<br>
     &ldquo;Size the market for dental clinics in the UK&rdquo;<br>
     &ldquo;Write icebreakers for these 10 people&rdquo;<br>
     &ldquo;Run today's partner signals&rdquo;<br>
-    Qwintiq does the work and hands you the finished result. Anything that would spend real credits pauses
+    QwintiQ does the work and hands you the finished result. Anything that would spend real credits pauses
     and asks you to confirm first, so nothing costs money by surprise.
   </p>
 </div>
-<p class="sub" style="text-align:center">Stuck? Your Qwintiq admin can re-send your details or reset your access any time.</p>
+<p class="sub" style="text-align:center">Stuck? Your QwintiQ admin can re-send your details or reset your access any time.</p>
 </main>
 <script>function cp(t,b){{navigator.clipboard.writeText(t).then(()=>{{const o=b.textContent;
 b.textContent="Copied ✓";setTimeout(()=>b.textContent=o,1500)}})}}</script>""",
-                 "Welcome — Qwintiq")
+                 "Welcome — QwintiQ")
 
 
 async def logout(request: Request):

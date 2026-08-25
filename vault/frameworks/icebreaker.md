@@ -2,7 +2,7 @@
 name: qwintiq-icebreaker
 description: >-
   Writes the single personalised opening line (the "icebreaker") that sits at the top of a
-  Qwintiq partnership message. The user states what to look for ONCE, in plain words, by picking
+  QwintiQ partnership message. The user states what to look for ONCE, in plain words, by picking
   from a short menu of FOUR website/LinkedIn detection angles built for partnership outreach:
   (1) an explicit partner or referral invite on their site, (2) a client vertical that overlaps
   ours, (3) a case-study "inflection moment" where PR could have helped, and (4) a services gap
@@ -19,11 +19,11 @@ description: >-
   NEVER makes up a fact, and it never spends AI Ark credits without the confirmation phrase.
 ---
 
-# Qwintiq Icebreaker
+# QwintiQ Icebreaker
 
 This skill writes the one personalised line that goes at the very top of a partnership message: the "icebreaker". A good icebreaker shows the person you actually looked at them before reaching out. A bad one (or a made-up one) does more harm than no personalisation at all.
 
-Qwintiq's outreach is **partnership / referral** outreach: the goal of the opener is to start a partnership conversation, not to pitch a product. So the icebreaker is built from things you can see on a prospect's **website or LinkedIn** that say "there is a reason for us to work together".
+QwintiQ's outreach is **partnership / referral** outreach: the goal of the opener is to start a partnership conversation, not to pitch a product. So the icebreaker is built from things you can see on a prospect's **website or LinkedIn** that say "there is a reason for us to work together".
 
 It works in a confirmed order:
 
@@ -33,7 +33,7 @@ It works in a confirmed order:
 
 It feeds straight into the rest of the system: the line it produces is the `[Icebreaker]` you give to **qwintiq-copywriter**, and the `{{icebreaker}}` value you load into **qwintiq-lemlist-upload**.
 
-> This framework is still being refined by Qwintiq, so it is built to be edited. The four angles, their detection words, the verticals, the services list, and the order all live in the user's **saved setup** and can be changed any time in plain words (see "Your icebreaker setup" below). Load the saved setup and confirm it on every run; never hardcode the order or the lists into your head.
+> This framework is still being refined by QwintiQ, so it is built to be edited. The four angles, their detection words, the verticals, the services list, and the order all live in the user's **saved setup** and can be changed any time in plain words (see "Your icebreaker setup" below). Load the saved setup and confirm it on every run; never hardcode the order or the lists into your head.
 
 ---
 
@@ -268,7 +268,7 @@ Name the real client and the real moment from the case study. Keep the opener to
 
 Name three real services you actually saw. The soft "Is that right?" is a deliberate, low-pressure open that invites a reply; keep it, but do not add a pitch on top of it. If PR / Public Relations IS mentioned on their site, this angle does **not** fire (there is no gap); skip to the colleague backup.
 
-> Note on the house style: Qwintiq openers stay light (an observation plus a reason to reach out). Angles 2, 3 and 4 each hint at the reason we'd partner, which is fine, but never stack the full offer into the opener. If an angle's natural wording starts to sound like a pitch, trim it back to the observation and let qwintiq-copywriter carry the offer in the body.
+> Note on the house style: QwintiQ openers stay light (an observation plus a reason to reach out). Angles 2, 3 and 4 each hint at the reason we'd partner, which is fine, but never stack the full offer into the opener. If an angle's natural wording starts to sound like a pitch, trim it back to the observation and let qwintiq-copywriter carry the offer in the body.
 
 ---
 

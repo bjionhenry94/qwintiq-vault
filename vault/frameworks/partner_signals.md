@@ -1,9 +1,9 @@
 
-# Qwintiq Partner Signals
+# QwintiQ Partner Signals
 
-This skill is Qwintiq's **daily partner-signal routine**, wrapped end to end. Each run turns "a company just did something worth noticing" into "the right people, with a personalised opener, loaded into the Lemlist campaign, today".
+This skill is QwintiQ's **daily partner-signal routine**, wrapped end to end. Each run turns "a company just did something worth noticing" into "the right people, with a personalised opener, loaded into the Lemlist campaign, today".
 
-It is built from the existing Qwintiq parts, tied together by one setup wizard:
+It is built from the existing QwintiQ parts, tied together by one setup wizard:
 
 - The find-and-qualify-and-pull-people engine is **qwintiq-signals** (web search, domain resolution, qualifying, AI Ark people search).
 - The opening line is **qwintiq-icebreaker**.
@@ -12,7 +12,7 @@ It is built from the existing Qwintiq parts, tied together by one setup wizard:
 
 This skill's job is to hold the routine's settings, run those parts in the right order with no gaps, and stop at the one place that costs money.
 
-> Note on the name: the client is **Qwintiq** (sometimes said "Quintic"). The "Quintic decision maker finder" the user refers to is Qwintiq's decision-maker finder, which is the **AI Ark people search** used in Step 3 below.
+> Note on the name: the client is **QwintiQ** (sometimes said "Quintic"). The "Quintic decision maker finder" the user refers to is QwintiQ's decision-maker finder, which is the **AI Ark people search** used in Step 3 below.
 
 ---
 
@@ -194,9 +194,9 @@ This is judgement that belongs to the user. Ask, do not guess. Note that a partn
 
 **Ask it like this:** *"What kind of company should count? My default is B2B companies with a real product worth partnering around. Want me to add a size range or specific countries, or anything to leave out?"* If they say the default is fine, take it and move on.
 
-### Step 3: Which decision-makers (the Qwintiq decision-maker finder)
+### Step 3: Which decision-makers (the QwintiQ decision-maker finder)
 
-The exact roles to pull inside each qualifying company, which the AI Ark people search (Qwintiq's decision-maker finder) will look for. Sensible default set for partner/PR outreach, for the user to confirm or change:
+The exact roles to pull inside each qualifying company, which the AI Ark people search (QwintiQ's decision-maker finder) will look for. Sensible default set for partner/PR outreach, for the user to confirm or change:
 
 - Head of Partnerships, VP Partnerships, Director of Partnerships, Head of Channel (the partnerships buyer).
 - Head of PR, Communications Director, Head of Communications (the comms buyer, when the PR-hire signal fired).
@@ -221,9 +221,9 @@ This is **qwintiq-icebreaker**'s job; this step just records the anchor and rule
 
 ### Step 5: Which Lemlist campaign
 
-Where the finished people go. Capture the **campaign name** (you resolve it to its `cam_...` id at run time via **qwintiq-lemlist-upload**) and confirm it is the right one (draft or running, email-only / LinkedIn / multichannel). If the user has not picked one, list the Qwintiq campaigns and let them choose, or point them to duplicate a master template first (see qwintiq-lemlist-upload).
+Where the finished people go. Capture the **campaign name** (you resolve it to its `cam_...` id at run time via **qwintiq-lemlist-upload**) and confirm it is the right one (draft or running, email-only / LinkedIn / multichannel). If the user has not picked one, list the QwintiQ campaigns and let them choose, or point them to duplicate a master template first (see qwintiq-lemlist-upload).
 
-**Ask it like this:** *"Which Lemlist campaign should these people land in?"* If they are not sure of the name, list their Qwintiq campaigns and let them pick. If none is ready yet, offer to help them set one up first (qwintiq-lemlist-upload).
+**Ask it like this:** *"Which Lemlist campaign should these people land in?"* If they are not sure of the name, list their QwintiQ campaigns and let them pick. If none is ready yet, offer to help them set one up first (qwintiq-lemlist-upload).
 
 ### Step 6: How it runs each day (Supervised or Autopilot)
 
@@ -272,7 +272,7 @@ Apply the Step 2 company-type rule to each company using what you can see on the
 
 ### Phase D: Find the decision-makers (AI Ark, gated)
 
-This is the Qwintiq decision-maker finder. Only now do you touch AI Ark. Full AI Ark mechanics, label resolution, the dials, and the per-record billing live in **qwintiq-list-building**'s `references/ai-ark-reference.md`; the same rules apply here.
+This is the QwintiQ decision-maker finder. Only now do you touch AI Ark. Full AI Ark mechanics, label resolution, the dials, and the per-record billing live in **qwintiq-list-building**'s `references/ai-ark-reference.md`; the same rules apply here.
 
 **D.1 Map the Step 3 roles to AI Ark dials.** One people search ANDs seniority, department, and title together, so two different kinds of role usually need two counts you then add. For the partner/PR default set:
 
@@ -437,7 +437,7 @@ Save to `~/.claude/skills/qwintiq-partner-signals/routines/<routine_id>.json`. T
 4. **Qualify before you spend.** Cut bad-fit companies on free web info first.
 5. **At least 20 qualifying companies is the daily target.** Work the signal waterfall to reach it; say so plainly if a thin day falls short.
 6. **Icebreakers are true or blank, never invented.** Anchor on the found signal; fall back only to a real in-list colleague, then an honest line.
-7. **AI Ark is the data source for finding people** (Qwintiq is AI-Ark-native). Mechanics live in qwintiq-list-building's AI Ark reference.
+7. **AI Ark is the data source for finding people** (QwintiQ is AI-Ark-native). Mechanics live in qwintiq-list-building's AI Ark reference.
 8. **Lemlist is the destination** (email + LinkedIn). Trial first, confirm campaign name and status, never message a real prospect during a test.
 9. **Avoid email enrichment during testing.** LinkedIn-only for Lemlist unless the user confirms an email pull with its own gate.
 10. **Plain English with the user. No jargon, no raw output, no em dashes.**
@@ -445,7 +445,7 @@ Save to `~/.claude/skills/qwintiq-partner-signals/routines/<routine_id>.json`. T
 
 ---
 
-## Related Qwintiq skills
+## Related QwintiQ skills
 
 - **qwintiq-signals**: the generic version of this routine (any user-defined signal). This skill is the partner/PR specialisation with the icebreaker and Lemlist steps built into one routine.
 - **qwintiq-list-building**: AI Ark market sizing and list building, and the home of the AI Ark reference used in Phase D.

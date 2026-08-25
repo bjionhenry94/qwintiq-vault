@@ -16,7 +16,7 @@ the frameworks, the sign-in wall) runs itself.
 3. Send them the one-time temporary password the yellow banner shows (it appears once).
 4. Send them the setup line for Claude Code:
    `claude mcp add --transport http qwintiq https://vault.qwintiq.com/mcp`
-   First time they use a Qwintiq skill, a Qwintiq sign-in page opens — they enter their
+   First time they use a QwintiQ skill, a QwintiQ sign-in page opens — they enter their
    email + the temporary password. That's the whole setup; nothing else to install.
 
 ## Removing someone / pausing access (≈5 seconds)
@@ -28,7 +28,7 @@ There is nothing to clean up on their computer: the skills were never files on i
 they keep is a connector that no longer answers them.
 
 ## What consultants experience
-They work in Claude Code exactly as before: "write Qwintiq copy", "size this market",
+They work in Claude Code exactly as before: "write QwintiQ copy", "size this market",
 "write icebreakers for these people", "run today's partner signals". Claude calls the
 vault, the vault returns the finished work. Counts are cheap and free-flowing; anything
 that spends real credits stops and asks them to type the confirmation sentence with the

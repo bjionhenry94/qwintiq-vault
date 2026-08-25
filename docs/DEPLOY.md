@@ -1,6 +1,6 @@
 # Deploy runbook — Render (app + managed Postgres)
 
-Test deploy runs under **Navreo's** accounts; migrate to Qwintiq's for final handover
+Test deploy runs under **Navreo's** accounts; migrate to QwintiQ's for final handover
 (SOW §11). Human steps are marked 🙋; everything else is in the repo. The app
 **self-bootstraps its tables** on first boot (`init_db`), so there is no manual schema step.
 
@@ -33,7 +33,7 @@ cd tests && python test_gate.py https://<service>.onrender.com                  
 (The gate suite creates + removes a throwaway consultant, so it also exercises every
 Postgres code path end-to-end. Re-add real consultants afterward.)
 
-## 4. Custom Qwintiq domain (optional, later) 🙋
+## 4. Custom QwintiQ domain (optional, later) 🙋
 Render service → Settings → Custom Domains → add `vault.qwintiq.com`; CNAME it to the Render
 hostname. TLS is automatic. Until then the `*.onrender.com` URL is fully usable as a
 custom connector.
@@ -66,4 +66,4 @@ to **one instance** — the MCP session manager and rate limiter hold in-memory 
 
 ## Costs (Navreo test)
 Render Starter web (~$7) + Render Postgres basic (~$7) + Anthropic/AI-ARK usage on Navreo's
-keys. Well within the $50/mo tooling line for the eventual Qwintiq deploy.
+keys. Well within the $50/mo tooling line for the eventual QwintiQ deploy.

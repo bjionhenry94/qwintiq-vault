@@ -53,7 +53,7 @@ def main():
     setups = json.loads(asyncio.run(mcp_call(token, "qwintiq_setup_list", {})))
     names = [s["name"] for s in setups]
     check("setup round-trips through vault", "My test setup" in names)
-    check("shared Qwintiq default setup visible", any(s["shared"] for s in setups))
+    check("shared QwintiQ default setup visible", any(s["shared"] for s in setups))
 
     ap = asyncio.run(mcp_call(token, "qwintiq_routine_save", {"name": "AP test", "config": {"run_mode": "autopilot"}}))
     check("autopilot routine without credit cap refused", "REFUSED" in ap)

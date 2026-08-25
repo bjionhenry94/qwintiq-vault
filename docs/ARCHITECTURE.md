@@ -1,12 +1,12 @@
-# Qwintiq Vault — Architecture & Tool Map
+# QwintiQ Vault — Architecture & Tool Map
 
-The vault is a remote **MCP server** that holds Qwintiq's four skill frameworks server-side and
+The vault is a remote **MCP server** that holds QwintiQ's four skill frameworks server-side and
 returns **finished work product only**. A consultant's Claude Code calls task-shaped tools
 ("write this sequence", "size this list"); the framework text never leaves the vault.
 
 ```
 Consultant's Claude Code             The Wall                The Vault (this server)
-  "write Qwintiq copy"  ── MCP call ─►  OAuth login +  ──►  engine.run("copywriter", brief)
+  "write QwintiQ copy"  ── MCP call ─►  OAuth login +  ──►  engine.run("copywriter", brief)
         │                               per-call key check     │  framework = system prompt
         ▼                                                      │  LLM runs SERVER-SIDE
   finished sequences  ◄── output only (leak-filtered) ◄────────┘  output filtered for leaks
@@ -22,9 +22,9 @@ Consultant's Claude Code             The Wall                The Vault (this ser
    which fails the SOW §2 promise and the red-team gate. Instead every tool takes a brief and
    returns finished output. The copywriting frameworks, icebreaker method, list-building credit
    logic, and IPP/partner research method all stay server-side, always.
-   - Consequence: the vault now DOES call an LLM (Anthropic API, Qwintiq's key at deploy,
+   - Consequence: the vault now DOES call an LLM (Anthropic API, QwintiQ's key at deploy,
      `ANTHROPIC_API_KEY` env). `VAULT_LLM=mock` runs a deterministic local mode for dev/tests.
-2. **Data keys: the vault proxies AI-ARK (and any Lemlist push).** Qwintiq's keys sit in env
+2. **Data keys: the vault proxies AI-ARK (and any Lemlist push).** QwintiQ's keys sit in env
    on the server (`AI_ARK_API_KEY`), never in a consultant's Claude. `VAULT_AIARK=mock` for dev.
 
 ## Extraction defence (layered; what Step 11 red-teams)
@@ -103,11 +103,11 @@ One schema (`db/schema.sql`), env-switchable driver: `DATABASE_URL` set → Post
 - **Phase 2 — Four skills migrated, finished-output-only + AI-ARK proxy + vault state** ← now
 - **Phase 3 — The Wall** (OAuth AS + per-call Keyring check)
 - **Phase 4 — Keyring + Control Panel** → Visual round 1
-- **Phase 5 — Deploy (Render + Supabase, Qwintiq accounts), custom domain** → Visual round 2
+- **Phase 5 — Deploy (Render + Supabase, QwintiQ accounts), custom domain** → Visual round 2
 - **Phase 6 — Launch, onboard, recorded handover** (14-day warranty starts)
 
 ## Stack
 Python + FastMCP (`mcp` 1.x, Streamable HTTP) mounted inside a Starlette app ·
 `anthropic` SDK (server-side execution; lazy import, mock mode without it) ·
 SQLite dev / Supabase Postgres prod · server-rendered HTML control panel ·
-Render hosting · custom Qwintiq domain. All third-party accounts in Qwintiq's name (SOW §11).
+Render hosting · custom QwintiQ domain. All third-party accounts in QwintiQ's name (SOW §11).

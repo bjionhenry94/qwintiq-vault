@@ -1,6 +1,6 @@
-"""Qwintiq Vault — remote MCP server (the "Qwintiq Box").
+"""QwintiQ Vault — remote MCP server (the "QwintiQ Box").
 
-Holds Qwintiq's four skill frameworks server-side and returns finished work only.
+Holds QwintiQ's four skill frameworks server-side and returns finished work only.
 Everything mounts in one app:
 
   /mcp                 — the vault's tools (behind the AuthGate: valid bearer token,
@@ -24,6 +24,7 @@ except ImportError:
 from starlette.applications import Starlette
 from starlette.responses import RedirectResponse
 from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
 from admin import panel
 from auth import oauth
@@ -46,6 +47,8 @@ app = Starlette(
     lifespan=lifespan,
     routes=[
         Route("/", home),
+        Mount("/static", app=StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")),
+              name="static"),
         Route("/.well-known/oauth-protected-resource", oauth.protected_resource_metadata),
         Route("/.well-known/oauth-protected-resource/mcp", oauth.protected_resource_metadata),
         Route("/.well-known/oauth-authorization-server", oauth.as_metadata),

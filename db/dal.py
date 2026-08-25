@@ -145,7 +145,7 @@ def _seed() -> None:
 
         q(
             "insert into admins (id, email, full_name, password_hash, created_at) values (?,?,?,?,?)",
-            (uid(), admin_email, os.environ.get("ADMIN_NAME", "Qwintiq Admin"), hash_password(admin_pw), _now()),
+            (uid(), admin_email, os.environ.get("ADMIN_NAME", "QwintiQ Admin"), hash_password(admin_pw), _now()),
         )
     seeds = Path(__file__).parent / "seed_state"
     if seeds.is_dir():

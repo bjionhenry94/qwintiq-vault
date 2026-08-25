@@ -1,7 +1,7 @@
-# Qwintiq Vault
+# QwintiQ Vault
 
-The **"Qwintiq Box"** from the Navreo IP-shield SOW — a remote **MCP server** that **hosts
-Qwintiq's skills** and serves them on demand to a consultant's Claude Code, which runs them. The
+The **"QwintiQ Box"** from the Navreo IP-shield SOW — a remote **MCP server** that **hosts
+QwintiQ's skills** and serves them on demand to a consultant's Claude Code, which runs them. The
 skills are never files on a consultant's machine; access is gated behind a login and revocable in
 one click. The MCP server auto-delivers the skills — consultants install and manage nothing.
 
@@ -34,5 +34,5 @@ No API keys needed to run — the vault serves instructions, it does not call an
 ```bash
 claude mcp add --transport http qwintiq-local http://localhost:8000/mcp
 ```
-Then in Claude Code: call `ping` (returns `qwintiq-vault: online`), or say "write Qwintiq copy" —
+Then in Claude Code: call `ping` (returns `qwintiq-vault: online`), or say "write QwintiQ copy" —
 Claude calls `qwintiq_copywriter`, receives the instructions, and runs the skill.

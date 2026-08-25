@@ -1,4 +1,4 @@
-"""AI-ARK proxy — Qwintiq's data key lives HERE (env), never on a consultant's machine.
+"""AI-ARK proxy — QwintiQ's data key lives HERE (env), never on a consultant's machine.
 
 Real mode: AI_ARK_API_KEY set -> calls api.ai-ark.com developer-portal endpoints.
 Mock mode: VAULT_AIARK=mock (or no key) -> deterministic counts/rows for dev + tests.

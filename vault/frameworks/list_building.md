@@ -1,5 +1,5 @@
 
-# Qwintiq List Building
+# QwintiQ List Building
 
 This skill takes a campaign brief and walks it through three stages, in order:
 
@@ -167,7 +167,7 @@ Only after a valid confirmation:
    - Companies: `company_name, website, country, employee_count, industry, linkedin`
    - Decision-makers: `full_name, title, company_name, website, country, linkedin` (plus `email` only if the user separately asked for verified emails; note that email verification is a different paid step and you must gate it the same way, with its own confirmation phrase and number).
 4. **Tell them where the file is** and give a one-line summary (how many rows, how many credits used).
-5. **Next step:** the rows are ready to load into the client's outreach tool. Qwintiq runs outreach through **Lemlist** (email + LinkedIn). Load the list into a Lemlist campaign with **qwintiq-lemlist-upload** (straight from Claude Code), or import the CSV in the Lemlist UI. This skill stops at the CSV.
+5. **Next step:** the rows are ready to load into the client's outreach tool. QwintiQ runs outreach through **Lemlist** (email + LinkedIn). Load the list into a Lemlist campaign with **qwintiq-lemlist-upload** (straight from Claude Code), or import the CSV in the Lemlist UI. This skill stops at the CSV.
 
 ---
 
@@ -193,7 +193,7 @@ Every exported partner/prospect list from this skill MUST be uploaded to the cen
 
 Then show the returned `https://navreo-signals.onrender.com/app/lists.html#<id>` link to the user — that link is part of the deliverable, alongside the CSV.
 
-Folder rules: `--client` is the client named in the brief (this skill's lists are Qwintiq's unless the brief says otherwise; internal/Navreo pulls go to `Navreo`); add `--folder` ONLY when the brief names a campaign theme or segment — never deeper than two levels. Re-running with the same name+client replaces that list's rows in place, so re-exports are safe.
+Folder rules: `--client` is the client named in the brief (this skill's lists are QwintiQ's unless the brief says otherwise; internal/Navreo pulls go to `Navreo`); add `--folder` ONLY when the brief names a campaign theme or segment — never deeper than two levels. Re-running with the same name+client replaces that list's rows in place, so re-exports are safe.
 
 
 ---
