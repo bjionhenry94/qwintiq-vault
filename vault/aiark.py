@@ -12,8 +12,14 @@ import hashlib
 import json
 import logging
 import os
+import time
 
 BASE = "https://api.ai-ark.com/api/developer-portal/v1"
+# Enrichment (finding a known person's email/phone) is served by AI-ARK's MCP tools, not the
+# developer-portal search REST. Same key, different transport (JSON-RPC over HTTP, token query).
+MCP_BASE = "https://api.ai-ark.com/v1/mcp"
+
+_log = logging.getLogger("qwintiq.vault")
 
 
 class DataUnavailable(Exception):
@@ -134,3 +140,160 @@ def _people_body(f: dict) -> dict:
     if f.get("exclude_titles"):
         body["excludeTitles"] = f["exclude_titles"]
     return body
+
+
+# ---------- Enrichment: add email + mobile to a known person ----------
+# NOTE: the real (live) path below is written to AI-ARK's verified MCP tool contract
+# (email_finder / mobile_phone_finder) but is intentionally fail-safe: any transport or
+# parsing problem degrades to "no contact found" for that person and is logged server-side —
+# it never raises to the consultant and never crashes the vault. Mock mode is exercised by the
+# tests; the first live run is the true end-to-end check.
+
+def _mcp_call(tool: str, arguments: dict) -> dict:
+    """Call one AI-ARK MCP tool over JSON-RPC. Returns the parsed tool payload as a dict, or {}
+    on any failure (logged, never raised)."""
+    import httpx
+
+    try:
+        r = httpx.post(
+            MCP_BASE,
+            params={"token": _key() or ""},
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                  "params": {"name": tool, "arguments": arguments}},
+            headers={"content-type": "application/json",
+                     "accept": "application/json, text/event-stream"},
+            timeout=60,
+        )
+        r.raise_for_status()
+        return _mcp_payload(r)
+    except Exception as e:
+        _log.warning("ai-ark enrich call failed (%s): %s", tool, e)
+        return {}
+
+
+def _mcp_payload(r) -> dict:
+    """Unwrap a JSON-RPC / MCP tools-call response into the tool's own payload dict, tolerating
+    either a plain JSON body or an SSE (text/event-stream) body."""
+    env = None
+    if "text/event-stream" in r.headers.get("content-type", ""):
+        for line in r.text.splitlines():
+            if line.startswith("data:"):
+                try:
+                    env = json.loads(line[5:].strip())
+                except Exception:
+                    env = None
+    else:
+        try:
+            env = r.json()
+        except Exception:
+            env = None
+    result = (env or {}).get("result", env) or {}
+    if isinstance(result, dict) and isinstance(result.get("structuredContent"), dict):
+        return result["structuredContent"]
+    content = result.get("content", []) if isinstance(result, dict) else []
+    for item in content if isinstance(content, list) else []:
+        if isinstance(item, dict) and item.get("type") == "text":
+            try:
+                return json.loads(item.get("text", ""))
+            except Exception:
+                return {"text": item.get("text", "")}
+    return result if isinstance(result, dict) else {}
+
+
+def _rows(payload: dict) -> list:
+    """Best-effort: pull a list of result records out of whatever shape a finder returns."""
+    if not isinstance(payload, dict):
+        return []
+    for key in ("results", "content", "data", "people", "items"):
+        v = payload.get(key)
+        if isinstance(v, list):
+            return v
+        if isinstance(v, dict) and isinstance(v.get("content"), list):
+            return v["content"]
+    return [payload]  # a single flat record
+
+
+def _first(payload: dict, *fields: str) -> str:
+    for row in _rows(payload):
+        if not isinstance(row, dict):
+            continue
+        for fld in fields:
+            val = row.get(fld)
+            if isinstance(val, list) and val:
+                val = val[0].get(fld[:-1]) if isinstance(val[0], dict) else val[0]
+            if val:
+                return str(val)
+    for fld in fields:  # also try the top level
+        if payload.get(fld):
+            return str(payload[fld])
+    return ""
+
+
+def _find_email(linkedin: str, name: str, domain: str, company: str) -> str:
+    args: dict = {"size": 1}
+    if linkedin:
+        args["linkedin"] = linkedin
+    if name:
+        args["fullName"] = name
+    if domain:
+        args["companyDomain"] = domain
+    elif company:
+        args["companyName"] = company
+    started = _mcp_call("email_finder", args)
+    inline = _first(started, "email", "emails")
+    if inline:
+        return inline
+    track = started.get("trackId") or started.get("trackID") or started.get("track_id")
+    if not track:
+        return ""
+    for _ in range(12):  # ~60s ceiling; email_finder is async
+        res = _mcp_call("email_finder_results", {"trackId": track, "size": 1})
+        email = _first(res, "email", "emails")
+        if email:
+            return email
+        if str(res.get("state", "")).upper() == "DONE":
+            return ""
+        time.sleep(5)
+    return ""
+
+
+def _find_phone(linkedin: str, name: str, domain: str) -> str:
+    body: dict = {"type": "MOBILE"}
+    if linkedin:
+        body["linkedin"] = linkedin
+    elif name and domain:
+        body.update({"name": name, "domain": domain})
+    else:
+        return ""
+    res = _mcp_call("mobile_phone_finder", {"requestBody": json.dumps(body)})
+    return _first(res, "phone", "phoneNumber", "mobile", "number")
+
+
+def _person_id(p: dict) -> tuple[str, str, str, str]:
+    linkedin = str(p.get("linkedin") or p.get("linkedin_url") or "").strip()
+    name = str(p.get("full_name") or p.get("name") or "").strip()
+    domain = str(p.get("company_domain") or p.get("domain") or p.get("website") or "").strip()
+    company = str(p.get("company_name") or p.get("company") or "").strip()
+    return linkedin, name, domain, company
+
+
+def enrich(people: list[dict], want_phone: bool = True) -> list[dict]:
+    """Add 'email' (and 'phone' when want_phone) to each person. Input rows are identified by a
+    LinkedIn URL, or a name plus company domain/name. Returns a NEW list; originals untouched.
+    Rows we can't resolve come back with empty email/phone and enriched=False — never an error."""
+    out: list[dict] = []
+    if _mock():
+        for i, p in enumerate(people or []):
+            _, name, domain, _ = _person_id(p)
+            handle = (name or f"person{i+1}").lower().replace(" ", ".")
+            out.append({**p, "email": f"{handle}@{domain or 'example.com'}",
+                        "phone": (f"+1415555{1000 + i:04d}" if want_phone else ""),
+                        "enriched": True, "mock": True})
+        return out
+    for p in people or []:
+        linkedin, name, domain, company = _person_id(p)
+        email = _find_email(linkedin, name, domain, company) if (linkedin or name) else ""
+        phone = _find_phone(linkedin, name, domain) if want_phone else ""
+        out.append({**p, "email": email, "phone": phone,
+                    "enriched": bool(email or phone), "mock": False})
+    return out

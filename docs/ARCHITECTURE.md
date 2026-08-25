@@ -78,6 +78,12 @@ only server-side — the consultant never sees the key or the endpoints (`vault/
 mode + detail-free `DataUnavailable` exactly like the AI-ARK proxy). No credit gate; the push runs
 on request and de-duplicates against the campaign.
 
+**Enrichment (server-side, proxied).** `qwintiq_enrich(people, include_phone)` adds work email +
+mobile to people identified by LinkedIn URL or name+company. Served by AI-ARK's finder tools over
+their MCP transport (`MCP_BASE`, `vault/aiark.py`), same key as the search proxy. Fail-safe: any
+transport/parse issue degrades to "not found" per row (never raises); mock mode returns placeholder
+contacts. ~1 AI-ARK credit per person on the live path.
+
 **State tools:** `qwintiq_setup_*` / `qwintiq_routine_*` — icebreaker setups and partner
 routines persist in the vault DB (`framework_state`), never on a consultant's disk.
 

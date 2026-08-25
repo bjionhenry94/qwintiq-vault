@@ -318,6 +318,36 @@ def qwintiq_lemlist_upload(campaign: str, leads: list[dict]) -> str:
     })
 
 
+# ---------- Enrichment: add contact details to a known list, server-side ----------
+
+@mcp.tool()
+@_safe
+def qwintiq_enrich(people: list[dict], include_phone: bool = True) -> str:
+    """Find the missing contact details (work email, and mobile when include_phone) for people
+    you already have.
+
+    Use this when the user has a list of people — names, companies, or LinkedIn URLs — but is
+    missing their emails/phones, and wants them filled in before outreach. Identify each person
+    by a "linkedin" URL, or a "full_name" plus a "company_domain" (or "company_name"). Any other
+    fields you pass are kept as-is on the row. The vault does the lookup itself — the data key and
+    provider never leave the vault — and returns the same list with "email"/"phone" added and an
+    "enriched" flag per row. People it can't resolve come back with those blank, not as an error.
+    """
+    rows = aiark.enrich(people or [], want_phone=include_phone)
+    found = sum(1 for r in rows if r.get("enriched"))
+    mock = bool(rows and rows[0].get("mock"))
+    receipt = f"Found contact details for {found} of {len(rows)} people."
+    if mock:
+        receipt += " (Demo mode — no data key is set, so these are placeholder details.)"
+    return json.dumps({
+        "people": rows,
+        "found": found,
+        "total": len(rows),
+        "receipt": receipt,
+        "note": "Show the 'receipt' line, then the enriched people. Blank email/phone = not found.",
+    })
+
+
 # ---------- Vault-side state: setups + routines live here, never on a consultant's disk ----
 
 @mcp.tool()
