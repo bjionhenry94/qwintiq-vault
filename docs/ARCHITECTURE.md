@@ -71,6 +71,13 @@ themselves. Position as an upgrade + real wall, **not** "impossible to infer" �
 | List-building | `qwintiq_list_building(icp…)` | ICP description / filters | sized plan + AI-ARK counts (proxied) |
 | Partner-signals | `qwintiq_partner_signals(routine…)` | routine name or params | finished signal report |
 
+**Lemlist upload (server-side, proxied).** `qwintiq_lemlist_campaigns()` lists the account's
+campaigns; `qwintiq_lemlist_upload(campaign, leads)` adds finished leads into a campaign by name
+or `cam_…` id. The Lemlist key lives in admin Settings (`LEMLIST_API_KEY`, encrypted) and is used
+only server-side — the consultant never sees the key or the endpoints (`vault/lemlist.py`, mock
+mode + detail-free `DataUnavailable` exactly like the AI-ARK proxy). No credit gate; the push runs
+on request and de-duplicates against the campaign.
+
 **State tools:** `qwintiq_setup_*` / `qwintiq_routine_*` — icebreaker setups and partner
 routines persist in the vault DB (`framework_state`), never on a consultant's disk.
 

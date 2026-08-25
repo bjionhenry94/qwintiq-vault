@@ -279,6 +279,8 @@ _MANAGED_KEYS = [
      "Alternative engine for the copy & icebreaker skills. Only one AI key is needed."),
     ("AI_ARK_API_KEY", "AI-Ark data key",
      "Powers market-sizing / list-building. Leave empty to run those in safe demo mode."),
+    ("LEMLIST_API_KEY", "Lemlist key",
+     "Lets the vault add finished leads straight into a Lemlist campaign. Leave empty to run in safe demo mode."),
 ]
 
 _STAT = {"managed_here": ('<span class="stat on">Set · saved here</span>', "Saved (encrypted). Enter a new value to replace it."),

@@ -20,7 +20,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from auth.context import current_consultant
 from db import dal
-from vault import aiark
+from vault import aiark, lemlist
 from vault.aiark import DataUnavailable
 from vault.engine import REFUSAL, meta_guard, run_framework
 
@@ -260,6 +260,62 @@ def qwintiq_partner_signals(routine_name: str = "", candidate_companies: list[di
     return run_framework("partner_signals", task, cid, "qwintiq_partner_signals",
                          guard_text=json.dumps({"candidates": candidate_companies or [],
                                                 "confirmation_phrase": confirmation_phrase}))
+
+
+# ---------- Lemlist: the vault adds finished leads to a campaign, server-side ----------
+
+@mcp.tool()
+@_safe
+def qwintiq_lemlist_campaigns() -> str:
+    """List the Lemlist campaigns finished leads can be added to (name + id).
+
+    Call this when the user wants to load people into Lemlist but hasn't named a campaign,
+    or to confirm the exact campaign name before an upload. Returns the campaigns on the
+    account; present the names and ask which one.
+    """
+    campaigns = lemlist.list_campaigns()
+    return json.dumps({
+        "campaigns": campaigns,
+        "note": ("Ask the user which campaign these people should go into, then call "
+                 "qwintiq_lemlist_upload with that campaign name (or id) and the leads."),
+    })
+
+
+@mcp.tool()
+@_safe
+def qwintiq_lemlist_upload(campaign: str, leads: list[dict]) -> str:
+    """Add finished leads straight into a Lemlist campaign, on the user's behalf.
+
+    Pass the campaign (its name or its cam_… id) and the leads. Each lead needs an "email";
+    optional fields are firstName, lastName, companyName, jobTitle, phone, linkedinUrl,
+    companyDomain, icebreaker, plus any custom variables your campaign uses. The vault does
+    the upload itself — the Lemlist key and mechanics never leave the vault — and returns a
+    plain-English receipt. Re-running is safe: leads already in the campaign are de-duplicated.
+    """
+    target = lemlist.resolve_campaign(campaign)
+    if not target:
+        available = lemlist.list_campaigns()
+        return json.dumps({
+            "error": f"No Lemlist campaign matches '{campaign}'.",
+            "campaigns": available,
+            "note": "Show the user these campaign names and ask them to pick the exact one.",
+        })
+    result = lemlist.upload_leads(target["id"], leads or [])
+    bits = [f"Added {result['added']} lead(s) to the Lemlist campaign “{target['name']}”."]
+    if result["skipped_no_email"]:
+        bits.append(f"{result['skipped_no_email']} row(s) had no valid email and were skipped.")
+    if result["failed"]:
+        bits.append(f"{result['failed']} lead(s) couldn't be added and can be retried.")
+    if result["mock"]:
+        bits.append("(Demo mode — no Lemlist key is set, so nothing was really uploaded.)")
+    return json.dumps({
+        "campaign": target,
+        "added": result["added"],
+        "skipped_no_email": result["skipped_no_email"],
+        "failed": result["failed"],
+        "receipt": " ".join(bits),
+        "note": "Show the user the 'receipt' line as a plain record of what was loaded.",
+    })
 
 
 # ---------- Vault-side state: setups + routines live here, never on a consultant's disk ----
