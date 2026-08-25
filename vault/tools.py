@@ -322,7 +322,7 @@ def qwintiq_lemlist_upload(campaign: str, leads: list[dict]) -> str:
 
 @mcp.tool()
 @_safe
-def qwintiq_enrich(people: list[dict], include_phone: bool = True) -> str:
+def qwintiq_enrich(people: list[dict], confirmation_phrase: str, include_phone: bool = True) -> str:
     """Find the missing contact details (work email, and mobile when include_phone) for people
     you already have.
 
@@ -332,17 +332,32 @@ def qwintiq_enrich(people: list[dict], include_phone: bool = True) -> str:
     fields you pass are kept as-is on the row. The vault does the lookup itself — the data key and
     provider never leave the vault — and returns the same list with "email"/"phone" added and an
     "enriched" flag per row. People it can't resolve come back with those blank, not as an error.
+
+    HARD GATE: finding details spends about one credit per person, so this only runs if
+    confirmation_phrase is the sentence the USER typed — 'I confirm to export this and use X
+    amount of credits' — where X equals the number of people. Quote them the sentence with the
+    real number and wait for them to type it; never type it for them.
     """
+    n = len(people or [])
+    m = _CONFIRM_RE.search(confirmation_phrase or "")
+    if not m:
+        return (f"ENRICH REFUSED: finding contact details spends credits, so it needs the user's "
+                f"typed go-ahead. Show them EXACTLY: 'I confirm to export this and use {n} amount "
+                f"of credits' and wait for them to type it themselves.")
+    confirmed = int(m.group(1).replace(",", ""))
+    if confirmed != n:
+        return (f"ENRICH REFUSED: the user confirmed {confirmed} but there are {n} people to "
+                f"enrich. Re-quote {n} and have them re-confirm.")
     rows = aiark.enrich(people or [], want_phone=include_phone)
     found = sum(1 for r in rows if r.get("enriched"))
     mock = bool(rows and rows[0].get("mock"))
-    receipt = f"Found contact details for {found} of {len(rows)} people."
+    receipt = f"Found contact details for {found} of {n} people (about {n} credits)."
     if mock:
         receipt += " (Demo mode — no data key is set, so these are placeholder details.)"
     return json.dumps({
         "people": rows,
         "found": found,
-        "total": len(rows),
+        "total": n,
         "receipt": receipt,
         "note": "Show the 'receipt' line, then the enriched people. Blank email/phone = not found.",
     })
