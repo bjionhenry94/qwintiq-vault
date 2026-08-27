@@ -137,7 +137,7 @@ background-image:radial-gradient(circle at 50% -12%, color-mix(in srgb,var(--pur
 .card{background:var(--card);border-radius:20px;padding:44px 38px;max-width:410px;width:92%;
 border-top:4px solid var(--brand);box-shadow:0 10px 40px rgba(52,25,72,.12)}
 @media(prefers-color-scheme:dark){.card{box-shadow:0 10px 40px rgba(0,0,0,.5)}}
-.logo{width:210px;max-width:70%;height:auto;display:block;margin-bottom:16px}
+.logo{width:210px;max-width:70%;height:auto;display:block;margin:0 auto 16px}
 h1{font-size:25px;font-weight:700;margin-bottom:6px;letter-spacing:-.01em}
 .sub{color:var(--ink-soft);font-size:14.5px;margin-bottom:24px;line-height:1.5}
 label{display:block;font-size:13px;font-weight:600;margin-bottom:15px;color:var(--ink)}
