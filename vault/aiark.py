@@ -1,10 +1,17 @@
-"""AI-ARK proxy — QwintiQ's data key lives HERE (env), never on a consultant's machine.
+"""AI-ARK proxy — QwintiQ's data key lives HERE (env/DB), never on a consultant's machine.
 
-Real mode: AI_ARK_API_KEY set -> calls api.ai-ark.com developer-portal endpoints.
+Real mode: AI_ARK_API_KEY set -> calls AI-ARK's hosted MCP (api.ai-ark.com/v1/mcp).
 Mock mode: VAULT_AIARK=mock (or no key) -> deterministic counts/rows for dev + tests.
 
-Counting uses size=1 and reads totalElements (≈1 credit). Exports are capped hard at the
-number the consultant confirmed — the server never pulls a row past the cap.
+ONE transport for everything (search, count, export, enrich): AI-ARK's hosted MCP with FLAT
+parameters. We deliberately do NOT hand-roll the developer-portal REST search endpoints — their
+request body is a nested `account`/`contact` schema that drifts, and a stale shape silently fails
+(that is exactly what broke list-building against AI-ARK's 2026 API update). The hosted MCP takes
+flat params, resolves cleanly, and is maintained by AI-ARK. Industry/location are strict catalogs,
+so we resolve them to exact enum values (industry_search / location_search) before searching.
+
+Counting uses size=1 and reads totalElements (~1 credit). Exports are capped hard at the number
+the consultant confirmed — the server never pulls a row past the cap.
 """
 from __future__ import annotations
 
@@ -14,9 +21,7 @@ import logging
 import os
 import time
 
-BASE = "https://api.ai-ark.com/api/developer-portal/v1"
-# Enrichment (finding a known person's email/phone) is served by AI-ARK's MCP tools, not the
-# developer-portal search REST. Same key, different transport (JSON-RPC over HTTP, token query).
+# AI-ARK's hosted MCP. Same key, JSON-RPC over HTTP with the token on the query string.
 MCP_BASE = "https://api.ai-ark.com/v1/mcp"
 
 _log = logging.getLogger("qwintiq.vault")
@@ -40,118 +45,21 @@ def _mock() -> bool:
     return os.environ.get("VAULT_AIARK", "").lower() == "mock" or not _key()
 
 
-def _post(path: str, body: dict) -> dict:
-    import httpx
-
-    try:
-        r = httpx.post(
-            f"{BASE}{path}",
-            json=body,
-            headers={"x-api-key": _key(), "content-type": "application/json"},
-            timeout=60,
-        )
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        # Log the true error server-side (admin can see it in the service logs); raise a bare,
-        # detail-free exception so the provider/URL never travels back to the consultant.
-        logging.getLogger("qwintiq.vault").warning("data provider call failed: %s", e)
-        raise DataUnavailable from None
-
-
 def _mock_total(seed: str, lo: int, hi: int) -> int:
     h = int(hashlib.sha256(seed.encode()).hexdigest(), 16)
     return lo + h % (hi - lo)
 
 
-def count_companies(filters: dict) -> dict:
-    if _mock():
-        total = _mock_total("c" + json.dumps(filters, sort_keys=True), 800, 9000)
-        sample = [{"company_name": "Sample Co (mock)", "website": "sample.example",
-                   "country": filters.get("country", ""), "employee_count": 24,
-                   "industry": filters.get("industry", "")}]
-        return {"total": total, "sample": sample, "mock": True}
-    body = {**_company_body(filters), "page": 0, "size": 1}
-    data = _post("/companies", body)
-    return {"total": data.get("totalElements", 0),
-            "sample": data.get("content", [])[:1], "mock": False}
+# ---------- Hosted-MCP transport (shared by search + enrich) ----------
 
+def _mcp_call(tool: str, arguments: dict, strict: bool = False) -> dict:
+    """Call one AI-ARK MCP tool over JSON-RPC. Returns the parsed tool payload as a dict.
 
-def count_people(filters: dict) -> dict:
-    if _mock():
-        total = _mock_total("p" + json.dumps(filters, sort_keys=True), 300, 5000)
-        return {"total": total, "sample": [{"full_name": "Sam Sample (mock)",
-                "title": (filters.get("titles") or ["Founder"])[0]}], "mock": True}
-    body = {**_company_body(filters), **_people_body(filters), "page": 0, "size": 1}
-    data = _post("/people", body)
-    return {"total": data.get("totalElements", 0),
-            "sample": data.get("content", [])[:1], "mock": False}
-
-
-def export_rows(filters: dict, kind: str, cap: int) -> list[dict]:
-    """Pull at most `cap` rows. The cap is the confirmed spend — never exceeded."""
-    if _mock():
-        n = min(cap, 25)
-        if kind == "companies":
-            return [{"company_name": f"Mock Co {i+1}", "website": f"mock{i+1}.example",
-                     "country": filters.get("country", ""), "employee_count": 10 + i,
-                     "industry": filters.get("industry", ""), "linkedin": ""} for i in range(n)]
-        return [{"full_name": f"Mock Person {i+1}", "title": (filters.get("titles") or ["Founder"])[0],
-                 "company_name": f"Mock Co {i+1}", "website": f"mock{i+1}.example",
-                 "country": filters.get("country", ""), "linkedin": ""} for i in range(n)]
-    rows: list[dict] = []
-    page = 0
-    path = "/companies" if kind == "companies" else "/people"
-    base = _company_body(filters) if kind == "companies" else {**_company_body(filters), **_people_body(filters)}
-    while len(rows) < cap:
-        size = min(100, cap - len(rows))
-        data = _post(path, {**base, "page": page, "size": size})
-        got = data.get("content", [])
-        rows.extend(got)
-        if len(got) < size:
-            break
-        page += 1
-    return rows[:cap]
-
-
-def _company_body(f: dict) -> dict:
-    body: dict = {}
-    if f.get("industry"):
-        body["industries"] = [f["industry"].lower()]
-    if f.get("country"):
-        body["locations"] = [f["country"]]
-    if f.get("size_min") is not None or f.get("size_max") is not None:
-        body["employeeSize"] = {"min": f.get("size_min") or 1, "max": f.get("size_max") or 100000}
-    if f.get("keywords"):
-        body["keywords"] = f["keywords"]
-    if f.get("exclude_keywords"):
-        body["excludeKeywords"] = f["exclude_keywords"]
-    return body
-
-
-def _people_body(f: dict) -> dict:
-    body: dict = {}
-    if f.get("seniorities"):
-        body["seniorities"] = f["seniorities"]
-    if f.get("departments"):
-        body["departments"] = f["departments"]
-    if f.get("titles"):
-        body["titles"] = f["titles"]
-    if f.get("exclude_titles"):
-        body["excludeTitles"] = f["exclude_titles"]
-    return body
-
-
-# ---------- Enrichment: add email + mobile to a known person ----------
-# NOTE: the real (live) path below is written to AI-ARK's verified MCP tool contract
-# (email_finder / mobile_phone_finder) but is intentionally fail-safe: any transport or
-# parsing problem degrades to "no contact found" for that person and is logged server-side —
-# it never raises to the consultant and never crashes the vault. Mock mode is exercised by the
-# tests; the first live run is the true end-to-end check.
-
-def _mcp_call(tool: str, arguments: dict) -> dict:
-    """Call one AI-ARK MCP tool over JSON-RPC. Returns the parsed tool payload as a dict, or {}
-    on any failure (logged, never raised)."""
+    strict=False (enrichment): any transport/parse problem is logged and swallowed -> {} so a
+    single unresolvable person degrades to "not found", never an error to the consultant.
+    strict=True (search/count/export/label-resolve): a transport failure raises DataUnavailable so
+    the curtain guard shows the honest "data unavailable" message instead of a bogus empty result.
+    """
     import httpx
 
     try:
@@ -167,7 +75,9 @@ def _mcp_call(tool: str, arguments: dict) -> dict:
         r.raise_for_status()
         return _mcp_payload(r)
     except Exception as e:
-        _log.warning("ai-ark enrich call failed (%s): %s", tool, e)
+        _log.warning("ai-ark call failed (%s): %s", tool, e)
+        if strict:
+            raise DataUnavailable from None
         return {}
 
 
@@ -199,6 +109,192 @@ def _mcp_payload(r) -> dict:
                 return {"text": item.get("text", "")}
     return result if isinstance(result, dict) else {}
 
+
+# ---------- Filter-label resolution (strict catalogs) ----------
+
+def _resolve_industry(text: str) -> str:
+    """Resolve a plain industry word to AI-ARK's exact catalog label(s). An exact (case-insensitive)
+    match wins and stays tight; otherwise return the matched labels (CSV) so an intent like
+    'recruitment' still covers its real labels. Empty in -> empty out (no industry filter)."""
+    text = (text or "").strip()
+    if not text:
+        return ""
+    payload = _mcp_call("industry_search", {"query": text}, strict=True)
+    opts = [o for o in (payload.get("industries") or []) if isinstance(o, str)]
+    for o in opts:
+        if o.lower() == text.lower():
+            return o
+    if opts:
+        return ",".join(opts[:12])
+    return text.lower()
+
+
+def _resolve_location(text: str) -> str:
+    """Resolve a location to an exact catalog leaf name. location_search does substring matching,
+    so we take the exact (case-insensitive) match if present, else pass the input through (a valid
+    leaf name still resolves). Empty in -> empty out."""
+    text = (text or "").strip()
+    if not text:
+        return ""
+    payload = _mcp_call("location_search", {"query": text}, strict=True)
+    for o in (payload.get("locations") or []):
+        if isinstance(o, str) and o.lower() == text.lower():
+            return o
+    return text
+
+
+def _resolve(f: dict) -> tuple[str, str]:
+    return _resolve_industry(f.get("industry", "")), _resolve_location(f.get("country", ""))
+
+
+def _company_args(f: dict, ind: str, loc: str) -> dict:
+    a: dict = {}
+    if ind:
+        a["industry"] = ind
+    if loc:
+        a["location"] = loc
+    if f.get("size_min") is not None:
+        a["minEmployees"] = int(f["size_min"])
+    if f.get("size_max") is not None:
+        a["maxEmployees"] = int(f["size_max"])
+    if f.get("keywords"):
+        a["keyword"] = ",".join(f["keywords"])
+        a["keywordMode"] = "SMART"
+    return a
+
+
+def _people_args(f: dict, ind: str, loc: str) -> dict:
+    a: dict = {}
+    if ind:
+        a["companyIndustry"] = ind
+    if loc:
+        a["companyLocation"] = loc
+    if f.get("size_min") is not None:
+        a["minEmployees"] = int(f["size_min"])
+    if f.get("size_max") is not None:
+        a["maxEmployees"] = int(f["size_max"])
+    if f.get("seniorities"):
+        a["seniority"] = ",".join(f["seniorities"])
+    if f.get("departments"):
+        a["department"] = ",".join(f["departments"])
+    if f.get("titles"):
+        a["title"] = ",".join(f["titles"])
+    if f.get("exclude_titles"):
+        a["excludeTitle"] = ",".join(f["exclude_titles"])
+    return a
+
+
+def _search(tool: str, args: dict) -> dict:
+    """One strict search call. Raises DataUnavailable if the response is not a real search result
+    (missing totalElements) — a genuine zero-match search still carries totalElements:0."""
+    payload = _mcp_call(tool, args, strict=True)
+    if not isinstance(payload, dict) or "totalElements" not in payload:
+        keys = list(payload)[:10] if isinstance(payload, dict) else type(payload).__name__
+        _log.warning("ai-ark %s returned no totalElements; keys=%s", tool, keys)
+        raise DataUnavailable
+    return payload
+
+
+# ---------- Flatten AI-ARK's nested rows to the vault's CSV columns ----------
+
+def _flatten_company(c: dict) -> dict:
+    summ = c.get("summary") or {}
+    link = c.get("link") or {}
+    hq = (c.get("location") or {}).get("headquarter") or {}
+    staff = summ.get("staff") or {}
+    return {
+        "company_name": summ.get("name") or c.get("name") or "",
+        "website": link.get("domain_ltd") or link.get("domain") or link.get("website") or "",
+        "country": hq.get("country") or "",
+        "employee_count": (staff.get("total") if isinstance(staff, dict) else "") or "",
+        "industry": summ.get("industry") or "",
+        "linkedin": link.get("linkedin") or "",
+    }
+
+
+def _flatten_person(p: dict) -> dict:
+    prof = p.get("profile") or {}
+    link = p.get("link") or {}
+    comp = p.get("company") or {}
+    csum = comp.get("summary") or {}
+    clink = comp.get("link") or {}
+    loc = p.get("location") or {}
+    return {
+        "full_name": prof.get("full_name") or p.get("full_name") or "",
+        "title": prof.get("title") or "",
+        "company_name": csum.get("name") or comp.get("name") or "",
+        "website": clink.get("domain_ltd") or clink.get("domain") or clink.get("website") or "",
+        "country": loc.get("country") or "",
+        "linkedin": link.get("linkedin") or "",
+    }
+
+
+# ---------- Public API: count + export ----------
+
+def count_companies(filters: dict) -> dict:
+    if _mock():
+        total = _mock_total("c" + json.dumps(filters, sort_keys=True), 800, 9000)
+        sample = [{"company_name": "Sample Co (mock)", "website": "sample.example",
+                   "country": filters.get("country", ""), "employee_count": 24,
+                   "industry": filters.get("industry", "")}]
+        return {"total": total, "sample": sample, "mock": True,
+                "resolved_industry": filters.get("industry", ""),
+                "resolved_location": filters.get("country", "")}
+    ind, loc = _resolve(filters)
+    payload = _search("company_search", {**_company_args(filters, ind, loc), "page": 0, "size": 1})
+    return {"total": payload.get("totalElements", 0),
+            "sample": [_flatten_company(c) for c in (payload.get("content") or [])[:1]],
+            "mock": False, "resolved_industry": ind, "resolved_location": loc}
+
+
+def count_people(filters: dict) -> dict:
+    if _mock():
+        total = _mock_total("p" + json.dumps(filters, sort_keys=True), 300, 5000)
+        return {"total": total, "sample": [{"full_name": "Sam Sample (mock)",
+                "title": (filters.get("titles") or ["Founder"])[0]}], "mock": True,
+                "resolved_industry": filters.get("industry", ""),
+                "resolved_location": filters.get("country", "")}
+    ind, loc = _resolve(filters)
+    payload = _search("people_search", {**_people_args(filters, ind, loc), "page": 0, "size": 1})
+    return {"total": payload.get("totalElements", 0),
+            "sample": [_flatten_person(p) for p in (payload.get("content") or [])[:1]],
+            "mock": False, "resolved_industry": ind, "resolved_location": loc}
+
+
+def export_rows(filters: dict, kind: str, cap: int) -> list[dict]:
+    """Pull at most `cap` rows. The cap is the confirmed spend — never exceeded."""
+    if _mock():
+        n = min(cap, 25)
+        if kind == "companies":
+            return [{"company_name": f"Mock Co {i+1}", "website": f"mock{i+1}.example",
+                     "country": filters.get("country", ""), "employee_count": 10 + i,
+                     "industry": filters.get("industry", ""), "linkedin": ""} for i in range(n)]
+        return [{"full_name": f"Mock Person {i+1}", "title": (filters.get("titles") or ["Founder"])[0],
+                 "company_name": f"Mock Co {i+1}", "website": f"mock{i+1}.example",
+                 "country": filters.get("country", ""), "linkedin": ""} for i in range(n)]
+    ind, loc = _resolve(filters)
+    if kind == "companies":
+        tool, args, flat = "company_search", _company_args(filters, ind, loc), _flatten_company
+    else:
+        tool, args, flat = "people_search", _people_args(filters, ind, loc), _flatten_person
+    rows: list[dict] = []
+    page = 0
+    while len(rows) < cap:
+        size = min(100, cap - len(rows))  # AI-ARK search caps page size at 100
+        payload = _search(tool, {**args, "page": page, "size": size})
+        got = payload.get("content") or []
+        rows.extend(flat(r) for r in got)
+        if len(got) < size:
+            break
+        page += 1
+    return rows[:cap]
+
+
+# ---------- Enrichment: add email + mobile to a known person ----------
+# The enrich path talks to the SAME hosted MCP as search (email_finder / mobile_phone_finder), but
+# is intentionally fail-safe: any transport or parsing problem degrades to "no contact found" for
+# that person and is logged server-side — it never raises to the consultant and never crashes the
+# vault. Mock mode is exercised by the tests.
 
 def _rows(payload: dict) -> list:
     """Best-effort: pull a list of result records out of whatever shape a finder returns."""

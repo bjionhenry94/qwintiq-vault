@@ -249,16 +249,22 @@ Then the user must **fully quit and reopen the app** (not just a new chat) for t
 Needs Node/npm on their machine. After restart, the `company_search` / `people_search` tools
 appear (under a random-id prefix). If they cannot restart now, use Option B for this session.
 
-### Option B: raw API (no restart, paste-key)
+### Option B: AI-ARK's hosted MCP (what the vault uses)
 
-Call the web API directly with the key in a header:
+The vault does NOT hand-roll the developer-portal REST search endpoints. Their request body is a
+nested `account`/`contact` schema that changes over time, and a stale shape silently fails (this is
+exactly what broke list-building when AI-ARK updated their API in 2026). Instead the vault calls
+**AI-ARK's hosted MCP** — the same flat-parameter tools as Option A, over one JSON-RPC transport:
 
-- Company search: `POST https://api.ai-ark.com/api/developer-portal/v1/companies`
-- People search:  `POST https://api.ai-ark.com/api/developer-portal/v1/people`
-- Header: `X-TOKEN: THEIR_AI_ARK_KEY`, `Content-Type: application/json`
-- Rate limit: 5 requests/second. Put a 2-second pause between calls or rapid calls fail.
+- Endpoint: `POST https://api.ai-ark.com/v1/mcp?token=THEIR_AI_ARK_KEY`
+- Body: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"company_search","arguments":{…flat params…}}}`
+- Headers: `Content-Type: application/json`, `Accept: application/json, text/event-stream`
+- Tools: `company_search`, `people_search`, `industry_search`, `location_search`, plus the finders
+  (`email_finder` / `mobile_phone_finder`) for enrichment. Same flat params as the tool path (§4/§5).
+- Read `totalElements` from the returned payload for the count.
 
-Request bodies use **nested** filters (a different shape from the flat tool params), see sections 4 and 5.
+This is the one transport for everything (search, count, export, enrich). It takes flat params and
+is insulated from REST body-schema drift.
 
 ---
 
@@ -294,22 +300,18 @@ Key params:
 - `size`: rows per page (use **1** for a count). `page`: 0-based.
 - Read **`totalElements`** from the response = total companies matching. That is the market-size number.
 
-### Raw API path (nested): `/v1/companies`
+### Hosted-MCP path (flat params): `company_search`
+Same flat params as the tool path above — the vault sends them as the `arguments` of a
+`company_search` MCP call (Option B). Example arguments:
 ```json
-{
-  "page": 0, "size": 1,
-  "account": {
-    "industry":     {"any": {"include": ["staffing and recruiting"]}},
-    "location":     {"any": {"include": ["United Kingdom"]}},
-    "employeeSize": {"type": "RANGE", "range": [{"start": 11, "end": 50}]},
-    "keywords":     {"any": {"include": ["practice","clinic"]}}
-  }
-}
+{"industry": "staffing and recruiting", "location": "United Kingdom",
+ "minEmployees": 11, "maxEmployees": 50, "keyword": "practice,clinic",
+ "keywordMode": "SMART", "page": 0, "size": 1}
 ```
-Read `totalElements`. **Note the size filter uses `employeeSize` RANGE here, NOT a `headcount`
-bucket** (see Quirks). Company fields you will export: `summary.name`, `link.domain_ltd`
-(canonical bare domain), `location.headquarter.country`, `summary.staff.total`, `summary.industry`,
-`link.linkedin`.
+Read `totalElements` from the payload. `minEmployees`/`maxEmployees` filter correctly here (no
+`employeeSize` RANGE object needed). Company fields you will export come back nested — the vault
+flattens them: `summary.name`, `link.domain_ltd` (canonical bare domain),
+`location.headquarter.country`, `summary.staff.total`, `summary.industry`, `link.linkedin`.
 
 ### Count pattern (both paths)
 Always count with `size: 1` and read `totalElements`. Never paginate the whole list to count;
@@ -330,22 +332,17 @@ Company-side filters are prefixed `company...`; person-side are bare:
   `excludeSeniority`, `excludeDepartment`: exclusions.
 - `size` (use **1** for a count), `page`. Read **`totalElements`**.
 
-### Raw API path (nested): `/v1/people`
+### Hosted-MCP path (flat params): `people_search`
+The vault sends these as the `arguments` of a `people_search` MCP call. Company-side filters are
+prefixed `company…`; person-side are bare. Example arguments:
 ```json
-{
-  "page": 0, "size": 1,
-  "account": {
-    "industry":     {"any": {"include": ["staffing and recruiting"]}},
-    "location":     {"any": {"include": ["United Kingdom"]}},
-    "employeeSize": {"type": "RANGE", "range": [{"start": 11, "end": 50}]}
-  },
-  "contact": {
-    "seniority": {"any": {"include": ["founder","owner","c_suite","partner","director","head","vp"]}}
-  }
-}
+{"companyIndustry": "staffing and recruiting", "companyLocation": "United Kingdom",
+ "minEmployees": 11, "maxEmployees": 50,
+ "seniority": "founder,owner,c_suite,partner,director,head,vp", "page": 0, "size": 1}
 ```
-Read `totalElements`. Person fields you will export: `profile.full_name`, `profile.title`,
-`link.linkedin`, plus the nested `company` object for the company name/domain.
+Read `totalElements`. Person fields you will export come back nested (the vault flattens them):
+`profile.full_name`, `profile.title`, `link.linkedin`, plus the nested `company` object for the
+company name/domain.
 
 ### Role-to-filter mapping (the multi-count pattern)
 Seniority, department, and title are ANDed within one search, so a brief naming more than one
@@ -383,10 +380,10 @@ All confirmed live against the API:
 
 1. **Industry label is lowercase-exact.** `"staffing and recruiting"` works; `"Staffing & Recruiting"`
    returns 0. Resolve the label first (section 3).
-2. **Raw-API size filter:** the `headcount` bucket filter is **silently ignored** on the raw
-   `/v1/companies` and `/v1/people` endpoints. The count comes back unchanged and giant companies
-   still appear. **Use `employeeSize` with `type:"RANGE"`** instead (shown in sections 4 and 5).
-   On the tool path, `minEmployees`/`maxEmployees` work correctly, no issue there.
+2. **Size filter:** always use `minEmployees`/`maxEmployees` (flat params) — they filter correctly
+   on both the tool path and the hosted-MCP path. Do NOT hand-roll the developer-portal REST
+   `employeeSize`/`headcount` objects; that endpoint's nested body drifts and a stale shape fails
+   silently (the 2026 break). One transport, flat params, everywhere.
 3. **Raw-API responses contain literal newlines inside company/person descriptions**, which breaks
    strict JSON parsers (`jq` will choke). Parse with Python `json.loads(text, strict=False)`. The
    tool path returns clean data, no issue.

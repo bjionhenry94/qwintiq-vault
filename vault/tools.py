@@ -165,6 +165,8 @@ def qwintiq_list_count(what_you_sell: str, industry: str, country: str,
         "decision_makers_matching": people["total"],
         "company_sample": companies["sample"],
         "person_sample": people["sample"],
+        "resolved": {"industry": companies.get("resolved_industry"),
+                     "location": companies.get("resolved_location")},
         "note": f"Counts only — nothing exported, roughly 2 credits used{mock_note}.",
         "to_export": ("Ask the user to choose a scope (all, or a capped batch), then have "
                       "them type EXACTLY: 'I confirm to export this and use X amount of "
