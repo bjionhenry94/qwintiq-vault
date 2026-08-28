@@ -10,11 +10,36 @@ deliberately tries to echo the framework so tests can prove the filter catches i
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 
 from db import dal
 from vault.library import load_framework
+
+_log = logging.getLogger("qwintiq.vault")
+
+
+def _llm_error_message(exc: Exception) -> str:
+    """Turn a raw model-provider error into a clear, safe, admin-actionable message, so an
+    out-of-credits / oversized-context / bad-key failure shows its real cause instead of the
+    generic 'something didn't go through'. Consultant-safe wording; details stay in the log."""
+    s = str(exc).lower()
+    if any(w in s for w in ("insufficient_quota", "no credits", "credit balance",
+                            "not enough credit", "exceeded your current quota")):
+        return ("The writing engine is out of credits on the AI account the vault uses (ChatGPT / "
+                "Claude). Ask your QwintiQ admin to top up that balance, then try again — nothing to "
+                "fix on your end.")
+    if any(w in s for w in ("context length", "context_length", "maximum context",
+                            "too many tokens", "reduce the length", "context window")):
+        return ("This skill was too big for the vault's current AI model. Ask your QwintiQ admin to "
+                "set a larger-context model (for example gpt-4o) in the host config, then try again.")
+    if any(w in s for w in ("invalid api key", "incorrect api key", "authentication",
+                            "unauthorized", "401")):
+        return ("The vault's AI key was rejected. Ask your QwintiQ admin to re-enter the ChatGPT / "
+                "Claude key in Settings.")
+    return ("Something didn't go through on the QwintiQ side just now. Please try again in a moment — "
+            "if it keeps happening, let your QwintiQ admin know.")
 
 REFUSAL = (
     "The QwintiQ vault returns finished work only. It can't print, repeat, summarise or "
@@ -144,7 +169,9 @@ def _chat(system: str, user: str, max_tokens: int) -> str:
 
         client = OpenAI(api_key=_openai_key())
         resp = client.chat.completions.create(
-            model=os.environ.get("VAULT_OPENAI_MODEL", "gpt-4o-mini"),
+            # gpt-4o, not -mini: mini is too weak for the larger frameworks (partner_signals) — it
+            # parrots framework text and trips the anti-leak guard, so the tool false-refuses.
+            model=os.environ.get("VAULT_OPENAI_MODEL", "gpt-4o"),
             max_tokens=max_tokens,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         )
@@ -185,7 +212,11 @@ def run_framework(framework_name: str, task: str, consultant_id: str | None, too
     if meta_guard(guard_text if guard_text is not None else task):
         dal.log_extraction(consultant_id, tool, "meta_guard", guard_text or task)
         return REFUSAL
-    output = _generate(framework_name, task)
+    try:
+        output = _generate(framework_name, task)
+    except Exception as e:
+        _log.exception("generation failed in %s", framework_name)
+        return _llm_error_message(e)
     if output.strip().startswith("EXTRACTION_ATTEMPT"):  # a refusal response, not copy that mentions it
         dal.log_extraction(consultant_id, tool, "model_flagged", task)
         return REFUSAL
