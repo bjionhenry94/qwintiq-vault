@@ -14,6 +14,8 @@ import json
 import logging
 import os
 import re
+import secrets
+import time
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -233,18 +235,42 @@ def qwintiq_list_export(kind: str, filters: dict, max_rows: int, confirmation_ph
                                "verbatim as a plain-English record of what was pulled and spent."})
 
 
+# A supervised gate is a TWO-call handshake, so the count + the exact shortlist it was quoted for
+# MUST survive between the calls — otherwise the client has to re-send the candidate list perfectly
+# (and if it doesn't, the run fires on nothing) and the count is recomputed and can drift. We hold
+# the snapshot server-side under a one-time token instead. Single process, so an in-memory dict is
+# enough; it's short-lived and popped on use.
+_SIGNAL_GATE: dict[str, dict] = {}
+# A supervised confirm happens in minutes, not hours. Env-overridable so a test can prove real
+# time-based expiry without waiting 30 minutes.
+_GATE_TTL = int(os.environ.get("SIGNAL_GATE_TTL_S", str(30 * 60)))
+
+
+def _run_partner_pull(cfg: dict, candidates: list[dict], confirmation_phrase: str, cid) -> str:
+    task = json.dumps({"routine": cfg, "candidates": candidates,
+                       "confirmation_phrase": confirmation_phrase})
+    # Guard only the user-supplied candidates/phrase; the routine config is trusted vault data.
+    return run_framework("partner_signals", task, cid, "qwintiq_partner_signals",
+                         guard_text=json.dumps({"candidates": candidates,
+                                                "confirmation_phrase": confirmation_phrase}))
+
+
 @mcp.tool()
 @_safe
 def qwintiq_partner_signals(routine_name: str = "", candidate_companies: list[dict] | None = None,
-                            confirmation_phrase: str = "") -> str:
+                            confirmation_phrase: str = "", gate_token: str = "") -> str:
     """Run QwintiQ's daily partner/PR signal routine.
 
-    Call with no arguments to see the saved routines. Call with routine_name to run one:
-    pass candidate_companies (name + website + what happened, from your own free web
-    search using the routine's search terms) and the vault qualifies them, counts the
-    right decision-makers, and — only after the user types the confirmation sentence with
-    the real number (Supervised mode) — pulls the people. Autopilot routines carry their
-    own daily credit cap and skip the daily stop, per the user's standing permission.
+    Call with no arguments to see the saved routines. Call with routine_name + candidate_companies
+    (name + website + what happened, from your own free web search using the routine's search terms)
+    and the vault qualifies them, counts the right decision-makers ONCE, and returns a gate_token
+    plus the sentence to show the user.
+
+    To confirm (Supervised): call again with the user's typed confirmation_phrase AND that
+    gate_token — you do NOT re-send candidate_companies; the vault uses the exact shortlist and
+    count it already quoted, so the number can't drift and nothing runs on an empty list. Autopilot
+    routines carry their own daily credit cap and skip the daily stop, per the user's standing
+    permission.
     """
     cid = _cid()
     if not routine_name:
@@ -256,10 +282,29 @@ def qwintiq_partner_signals(routine_name: str = "", candidate_companies: list[di
         return json.dumps({"error": f"No routine named '{routine_name}'.",
                            "routines": [r["name"] for r in dal.state_list(cid, "partner_routine")]})
     cfg = row["config"]
-    task = json.dumps({"routine": cfg, "candidates": candidate_companies or [],
-                       "confirmation_phrase": confirmation_phrase})
     m = _CONFIRM_RE.search(confirmation_phrase or "")
     autopilot = (cfg.get("run_mode") == "autopilot")
+
+    # Confirmation via the token from the gate call: the server already holds the shortlist + count.
+    if gate_token and m:
+        snap = _SIGNAL_GATE.pop(gate_token, None)
+        if not snap or snap["exp"] < time.time():
+            return json.dumps({"error": "That confirmation has expired. Re-run the routine to get a "
+                               "fresh count and a new confirmation sentence."})
+        if int(m.group(1).replace(",", "")) != snap["n"]:
+            return json.dumps({"gate": f"The number must match. Show the user EXACTLY: 'I confirm to "
+                               f"export this and use {snap['n']} amount of credits'.",
+                               "estimated_people": snap["n"], "gate_token": gate_token})
+        return _run_partner_pull(cfg, snap["candidates"], confirmation_phrase, cid)
+
+    # A phrase with no shortlist and no token = the shortlist was lost between calls. Never run on
+    # an empty list; send them back to the gate.
+    if m and not candidate_companies and not autopilot:
+        return json.dumps({"error": "Missing the shortlist. Re-run the routine with the "
+                           "candidate_companies to see the count, then confirm with the gate_token "
+                           "it returns (no need to paste the list again)."})
+
+    # New gate call: qualify + count ONCE, snapshot the shortlist + count under a one-time token.
     if candidate_companies and not m and not autopilot:
         dm = cfg.get("decision_makers", {})
         hints = dm.get("ai_ark_dials_hint", {}) or {}
@@ -268,17 +313,20 @@ def qwintiq_partner_signals(routine_name: str = "", candidate_companies: list[di
                                   "seniorities": first.get("seniority", []),
                                   "departments": first.get("department", [])})
         n = min(est["total"], dm.get("max_per_company", 3) * len(candidate_companies))
+        token = secrets.token_urlsafe(16)
+        _SIGNAL_GATE[token] = {"candidates": candidate_companies, "n": n, "exp": time.time() + _GATE_TTL}
         return json.dumps({
             "qualified_note": "Candidates received. Free qualify + count done; the paid pull is gated.",
             "estimated_people": n,
+            "gate_token": token,
             "gate": ("Supervised routine: show the user this sentence to type EXACTLY — "
-                     f"'I confirm to export this and use {n} amount of credits' — then call "
-                     "again with their typed sentence as confirmation_phrase."),
+                     f"'I confirm to export this and use {n} amount of credits' — then call again "
+                     f"with their typed sentence as confirmation_phrase AND gate_token='{token}'. "
+                     "Do NOT re-send candidate_companies."),
         })
-    # Guard only the user-supplied candidates/phrase; the routine config is trusted vault data.
-    return run_framework("partner_signals", task, cid, "qwintiq_partner_signals",
-                         guard_text=json.dumps({"candidates": candidate_companies or [],
-                                                "confirmation_phrase": confirmation_phrase}))
+
+    # Legacy / autopilot / one-shot: candidates+phrase on one call still works; autopilot pulls.
+    return _run_partner_pull(cfg, candidate_companies or [], confirmation_phrase, cid)
 
 
 # ---------- Lemlist: the vault adds finished leads to a campaign, server-side ----------

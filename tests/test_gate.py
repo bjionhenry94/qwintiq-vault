@@ -154,6 +154,47 @@ def main():
     out = asyncio.run(mcp_call(token, "ping", {}))
     check("session persists across calls", "online" in out)
 
+    # Partner-signals stateful gate (regression: the count used to drift and a dropped candidate
+    # list used to run on nothing — the gate now hands back a one-time token that carries both).
+    cands = [{"name": "A Co", "website": "a.com", "what_happened": "launched a partner program"},
+             {"name": "B Co", "website": "b.com", "what_happened": "hired a Head of Partnerships"}]
+    rlist = json.loads(asyncio.run(mcp_call(token, "qwintiq_routine_list", {})))
+    names = rlist if isinstance(rlist, list) else rlist.get("routines", [])
+    rname = (names[0]["name"] if names and isinstance(names[0], dict) else
+             (names[0] if names else "Partner and PR signals"))
+    g = json.loads(asyncio.run(mcp_call(token, "qwintiq_partner_signals",
+                                        {"routine_name": rname, "candidate_companies": cands})))
+    check("signals gate returns a one-time token + count", bool(g.get("gate_token")) and g.get("estimated_people") is not None)
+    ph = f"I confirm to export this and use {g.get('estimated_people')} amount of credits"
+    proceed = asyncio.run(mcp_call(token, "qwintiq_partner_signals",
+                                   {"routine_name": rname, "confirmation_phrase": ph, "gate_token": g.get("gate_token")}))
+    check("signals confirm via token (candidates NOT re-sent) runs", "RUN REPORT" in proceed)
+    reuse = asyncio.run(mcp_call(token, "qwintiq_partner_signals",
+                                 {"routine_name": rname, "confirmation_phrase": ph, "gate_token": g.get("gate_token")}))
+    check("signals token is one-time", "expired" in reuse.lower())
+    lost = asyncio.run(mcp_call(token, "qwintiq_partner_signals",
+                                {"routine_name": rname, "confirmation_phrase": ph}))
+    check("signals phrase without shortlist refuses (no empty run)", "Missing the shortlist" in lost)
+
+    # Real time-based TTL expiry (distinct from one-time-use): a fresh token left to age past the
+    # TTL is rejected. Needs the server started with a short SIGNAL_GATE_TTL_S.
+    ttl = float(os.environ.get("SIGNAL_GATE_TTL_S", "0") or 0)
+    if 0 < ttl <= 10:
+        import time as _time
+        g2 = json.loads(asyncio.run(mcp_call(token, "qwintiq_partner_signals",
+                                             {"routine_name": rname, "candidate_companies": cands})))
+        _time.sleep(ttl + 1.5)
+        ph2 = f"I confirm to export this and use {g2.get('estimated_people')} amount of credits"
+        aged = asyncio.run(mcp_call(token, "qwintiq_partner_signals",
+                                    {"routine_name": rname, "confirmation_phrase": ph2, "gate_token": g2.get("gate_token")}))
+        check("signals token expires after its TTL", "expired" in aged.lower())
+
+    # Enrichment runs through the real MCP transport (regression for the async-tool fix).
+    en = json.loads(asyncio.run(mcp_call(token, "qwintiq_enrich", {
+        "people": [{"full_name": "Jane Doe", "company_domain": "acme.com"}],
+        "confirmation_phrase": "I confirm to export this and use 1 amount of credits"})))
+    check("enrich async tool works via MCP", en.get("total") == 1 and isinstance(en.get("people"), list))
+
     # 4. Revoke key -> live session dies on next call
     consultants = json.loads(re.search(r"", "") or "null") if False else None
     page = ac.get("/admin", follow_redirects=True).text
