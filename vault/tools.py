@@ -50,6 +50,23 @@ def _safe(fn):
             return _SAFE_ERROR
     return wrapper
 
+
+def _safe_async(fn):
+    """Async twin of _safe for tools that must await (e.g. enrichment polls AI-ARK without
+    blocking the event loop — mcp 1.x runs sync tools on the loop, so a blocking tool hangs the
+    whole vault). The wrapper stays a coroutine function so FastMCP awaits it."""
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await fn(*args, **kwargs)
+        except DataUnavailable:
+            _log.warning("data lookup failed in %s", fn.__name__)
+            return _DATA_ERROR
+        except Exception:
+            _log.exception("tool %s failed", fn.__name__)
+            return _SAFE_ERROR
+    return wrapper
+
 # FastMCP auto-enables DNS-rebinding protection (Host allow-list = localhost only) whenever its
 # host is 127.0.0.1 — which silently 421s every request once deployed on a real hostname behind a
 # proxy. That protection guards browser/localhost servers against malicious web pages; it does NOT
@@ -323,17 +340,18 @@ def qwintiq_lemlist_upload(campaign: str, leads: list[dict]) -> str:
 # ---------- Enrichment: add contact details to a known list, server-side ----------
 
 @mcp.tool()
-@_safe
-def qwintiq_enrich(people: list[dict], confirmation_phrase: str, include_phone: bool = True) -> str:
-    """Find the missing contact details (work email, and mobile when include_phone) for people
-    you already have.
+@_safe_async
+async def qwintiq_enrich(people: list[dict], confirmation_phrase: str, include_phone: bool = False) -> str:
+    """Find the missing work EMAIL (and, only when include_phone=True, the mobile) for people you
+    already have.
 
     Use this when the user has a list of people — names, companies, or LinkedIn URLs — but is
-    missing their emails/phones, and wants them filled in before outreach. Identify each person
-    by a "linkedin" URL, or a "full_name" plus a "company_domain" (or "company_name"). Any other
-    fields you pass are kept as-is on the row. The vault does the lookup itself — the data key and
-    provider never leave the vault — and returns the same list with "email"/"phone" added and an
-    "enriched" flag per row. People it can't resolve come back with those blank, not as an error.
+    missing their emails, and wants them filled in before outreach. Identify each person by a
+    "linkedin" URL, or a "full_name" plus a "company_domain" (or "company_name"). Any other fields
+    you pass are kept as-is on the row. The vault does the lookup itself — the data key and provider
+    never leave the vault — and returns the same list with "email" (and "phone" when asked) added
+    plus an "enriched" flag per row. People it can't resolve come back with those blank, not as an
+    error. Set include_phone=True ONLY when the user explicitly wants mobile numbers (it costs more).
 
     HARD GATE: finding details spends about one credit per person, so this only runs if
     confirmation_phrase is the sentence the USER typed — 'I confirm to export this and use X
@@ -350,7 +368,7 @@ def qwintiq_enrich(people: list[dict], confirmation_phrase: str, include_phone: 
     if confirmed != n:
         return (f"ENRICH REFUSED: the user confirmed {confirmed} but there are {n} people to "
                 f"enrich. Re-quote {n} and have them re-confirm.")
-    rows = aiark.enrich(people or [], want_phone=include_phone)
+    rows = await aiark.enrich_async(people or [], want_phone=include_phone)
     found = sum(1 for r in rows if r.get("enriched"))
     mock = bool(rows and rows[0].get("mock"))
     receipt = f"Found contact details for {found} of {n} people (about {n} credits)."

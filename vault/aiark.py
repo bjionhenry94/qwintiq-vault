@@ -15,6 +15,7 @@ the consultant confirmed — the server never pulls a row past the cap.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -309,23 +310,21 @@ def _rows(payload: dict) -> list:
     return [payload]  # a single flat record
 
 
-def _first(payload: dict, *fields: str) -> str:
-    for row in _rows(payload):
-        if not isinstance(row, dict):
-            continue
-        for fld in fields:
-            val = row.get(fld)
-            if isinstance(val, list) and val:
-                val = val[0].get(fld[:-1]) if isinstance(val[0], dict) else val[0]
-            if val:
-                return str(val)
-    for fld in fields:  # also try the top level
-        if payload.get(fld):
-            return str(payload[fld])
-    return ""
+def _person_id(p: dict) -> tuple[str, str, str, str]:
+    linkedin = str(p.get("linkedin") or p.get("linkedin_url") or "").strip()
+    name = str(p.get("full_name") or p.get("name") or "").strip()
+    domain = str(p.get("company_domain") or p.get("domain") or p.get("website") or "").strip()
+    company = str(p.get("company_name") or p.get("company") or "").strip()
+    return linkedin, name, domain, company
 
 
-def _find_email(linkedin: str, name: str, domain: str, company: str) -> str:
+def _has_id(p: dict) -> bool:
+    linkedin, name, _, _ = _person_id(p)
+    return bool(linkedin or name)
+
+
+def _email_args(p: dict) -> dict:
+    linkedin, name, domain, company = _person_id(p)
     args: dict = {"size": 1}
     if linkedin:
         args["linkedin"] = linkedin
@@ -335,61 +334,150 @@ def _find_email(linkedin: str, name: str, domain: str, company: str) -> str:
         args["companyDomain"] = domain
     elif company:
         args["companyName"] = company
-    started = _mcp_call("email_finder", args)
-    inline = _first(started, "email", "emails")
-    if inline:
-        return inline
-    track = started.get("trackId") or started.get("trackID") or started.get("track_id")
-    if not track:
-        return ""
-    for _ in range(12):  # ~60s ceiling; email_finder is async
-        res = _mcp_call("email_finder_results", {"trackId": track, "size": 1})
-        email = _first(res, "email", "emails")
-        if email:
-            return email
-        if str(res.get("state", "")).upper() == "DONE":
-            return ""
-        time.sleep(5)
-    return ""
+    return args
 
 
-def _find_phone(linkedin: str, name: str, domain: str) -> str:
+def _phone_body(p: dict) -> dict | None:
+    linkedin, name, domain, _ = _person_id(p)
     body: dict = {"type": "MOBILE"}
     if linkedin:
         body["linkedin"] = linkedin
     elif name and domain:
         body.update({"name": name, "domain": domain})
     else:
-        return ""
-    res = _mcp_call("mobile_phone_finder", {"requestBody": json.dumps(body)})
-    return _first(res, "phone", "phoneNumber", "mobile", "number")
+        return None
+    return body
 
 
-def _person_id(p: dict) -> tuple[str, str, str, str]:
-    linkedin = str(p.get("linkedin") or p.get("linkedin_url") or "").strip()
-    name = str(p.get("full_name") or p.get("name") or "").strip()
-    domain = str(p.get("company_domain") or p.get("domain") or p.get("website") or "").strip()
-    company = str(p.get("company_name") or p.get("company") or "").strip()
-    return linkedin, name, domain, company
+def _extract_email(payload: dict) -> str:
+    """AI-ARK's email_finder nests the address at content[].email.output[].address. Prefer a VALID
+    result; fall back to any address returned."""
+    for row in _rows(payload):
+        if not isinstance(row, dict):
+            continue
+        em = row.get("email")
+        if isinstance(em, str) and "@" in em:
+            return em
+        outs = em.get("output") if isinstance(em, dict) else (em if isinstance(em, list) else [])
+        best = ""
+        for o in outs or []:
+            if not isinstance(o, dict):
+                continue
+            addr = o.get("address") or o.get("email")
+            if not addr:
+                continue
+            if str(o.get("status", "")).upper() == "VALID":
+                return str(addr)
+            best = best or str(addr)
+        if best:
+            return best
+    return ""
 
 
-def enrich(people: list[dict], want_phone: bool = True) -> list[dict]:
+def _extract_phone(payload: dict) -> str:
+    """mobile_phone_finder shape is not firmly documented, so read defensively: nested
+    <field>.output[].{number,phone,address}, a list of the same, or a flat field."""
+    for row in _rows(payload):
+        if not isinstance(row, dict):
+            continue
+        for key in ("phone", "mobile", "phoneNumber", "number"):
+            v = row.get(key)
+            if isinstance(v, str) and v:
+                return v
+            outs = v.get("output") if isinstance(v, dict) else (v if isinstance(v, list) else [])
+            for o in outs or []:
+                if isinstance(o, dict):
+                    n = o.get("number") or o.get("phone") or o.get("address") or o.get("value")
+                    if n:
+                        return str(n)
+                elif o:
+                    return str(o)
+    return ""
+
+
+async def _amcp(client, tool: str, arguments: dict) -> dict:
+    """Async call to one AI-ARK MCP tool. Returns the parsed payload, or {} on any failure
+    (logged, never raised). Async so the vault's event loop is never blocked while we wait."""
+    try:
+        r = await client.post(
+            MCP_BASE,
+            params={"token": _key() or ""},
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                  "params": {"name": tool, "arguments": arguments}},
+            headers={"content-type": "application/json",
+                     "accept": "application/json, text/event-stream"},
+        )
+        r.raise_for_status()
+        return _mcp_payload(r)
+    except Exception as e:
+        _log.warning("ai-ark async call failed (%s): %s", tool, e)
+        return {}
+
+
+# email_finder is asynchronous (a quick job that resolves in a few seconds). We fire every job
+# up front, then poll the still-pending ones together on a short, non-blocking budget. The whole
+# batch finishes in seconds and NEVER blocks the server — awaits yield the loop so ping and other
+# calls stay live (mcp 1.x runs sync tools on the event loop, so a sleeping sync tool would hang
+# the whole vault — which is the bug this replaced).
+_POLL_BUDGET_S = 20.0
+_POLL_EVERY_S = 2.0
+
+
+async def enrich_async(people: list[dict], want_phone: bool = True) -> list[dict]:
     """Add 'email' (and 'phone' when want_phone) to each person. Input rows are identified by a
     LinkedIn URL, or a name plus company domain/name. Returns a NEW list; originals untouched.
     Rows we can't resolve come back with empty email/phone and enriched=False — never an error."""
-    out: list[dict] = []
+    people = people or []
     if _mock():
-        for i, p in enumerate(people or []):
+        out = []
+        for i, p in enumerate(people):
             _, name, domain, _ = _person_id(p)
-            handle = (name or f"person{i+1}").lower().replace(" ", ".")
+            handle = (name or f"person{i + 1}").lower().replace(" ", ".")
             out.append({**p, "email": f"{handle}@{domain or 'example.com'}",
                         "phone": (f"+1415555{1000 + i:04d}" if want_phone else ""),
                         "enriched": True, "mock": True})
         return out
-    for p in people or []:
-        linkedin, name, domain, company = _person_id(p)
-        email = _find_email(linkedin, name, domain, company) if (linkedin or name) else ""
-        phone = _find_phone(linkedin, name, domain) if want_phone else ""
-        out.append({**p, "email": email, "phone": phone,
-                    "enriched": bool(email or phone), "mock": False})
-    return out
+
+    import httpx
+
+    emails = [""] * len(people)
+    phones = [""] * len(people)
+    async with httpx.AsyncClient(timeout=30) as client:
+        # 1. Fire an email_finder job for everyone we can identify (concurrently).
+        eidx = [i for i, p in enumerate(people) if _has_id(p)]
+        started = await asyncio.gather(*[_amcp(client, "email_finder", _email_args(people[i])) for i in eidx])
+        pending: list[tuple[int, str]] = []
+        for i, s in zip(eidx, started):
+            em = _extract_email(s)
+            if em:
+                emails[i] = em
+            else:
+                track = s.get("trackId") or s.get("trackID") or s.get("track_id")
+                if track:
+                    pending.append((i, track))
+        # 2. Poll the pending jobs together on a short, non-blocking budget.
+        deadline = time.monotonic() + _POLL_BUDGET_S
+        while pending and time.monotonic() < deadline:
+            await asyncio.sleep(_POLL_EVERY_S)
+            polled = await asyncio.gather(
+                *[_amcp(client, "email_finder_results", {"trackId": t, "size": 1}) for _, t in pending])
+            still: list[tuple[int, str]] = []
+            for (i, t), res in zip(pending, polled):
+                em = _extract_email(res)
+                if em:
+                    emails[i] = em
+                elif str(res.get("state", "")).upper() != "DONE":
+                    still.append((i, t))  # keep waiting; DONE-with-no-email drops out
+            pending = still
+        # 3. Phones — best-effort, one concurrent call each, no polling.
+        if want_phone:
+            pidx = [i for i, p in enumerate(people) if _phone_body(p)]
+            phres = await asyncio.gather(
+                *[_amcp(client, "mobile_phone_finder", {"requestBody": json.dumps(_phone_body(people[i]))})
+                  for i in pidx])
+            for i, res in zip(pidx, phres):
+                phones[i] = _extract_phone(res)
+
+    return [{**p, "email": emails[i], "phone": phones[i],
+             "enriched": bool(emails[i] or phones[i]), "mock": False}
+            for i, p in enumerate(people)]
