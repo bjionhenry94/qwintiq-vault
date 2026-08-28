@@ -417,8 +417,20 @@ async def qwintiq_enrich(people: list[dict], confirmation_phrase: str, include_p
         return (f"ENRICH REFUSED: the user confirmed {confirmed} but there are {n} people to "
                 f"enrich. Re-quote {n} and have them re-confirm.")
     rows = await aiark.enrich_async(people or [], want_phone=include_phone)
+    ark_error = next((r.get("ark_error") for r in rows if r.get("ark_error")), "")
+    if ark_error:
+        return json.dumps({
+            "error": "ENRICH COULD NOT RUN",
+            "reason": ark_error,
+            "found": 0, "total": n,
+            "receipt": ("The data provider refused the lookup — this reads as the AI-Ark balance "
+                        "being out of credits. Nothing was charged and no emails were added. Ask "
+                        "your QwintiQ admin to top up the AI-Ark balance, then run this again."),
+            "note": "Show the user the 'receipt' line. Do NOT retry — a top-up is needed first.",
+        })
     found = sum(1 for r in rows if r.get("enriched"))
     mock = bool(rows and rows[0].get("mock"))
+    # Billing is per attempt, not per hit, so the spend tracks the number of people, not the finds.
     receipt = f"Found contact details for {found} of {n} people (about {n} credits)."
     if mock:
         receipt += " (Demo mode — no data key is set, so these are placeholder details.)"

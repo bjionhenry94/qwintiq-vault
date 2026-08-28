@@ -395,6 +395,19 @@ def _extract_phone(payload: dict) -> str:
     return ""
 
 
+def _ark_error(payload: dict) -> str:
+    """Detect an AI-ARK error envelope (out of credits, quota, auth) so we can surface it instead
+    of silently reporting 'nothing found'. Returns the message, or '' if the payload looks fine."""
+    if not isinstance(payload, dict):
+        return ""
+    for k in ("error", "message", "text", "detail"):
+        v = payload.get(k)
+        if isinstance(v, str) and any(w in v.lower() for w in
+                                      ("credit", "402", "quota", "insufficient", "unauthor", "forbidden")):
+            return v.strip()
+    return ""
+
+
 async def _amcp(client, tool: str, arguments: dict) -> dict:
     """Async call to one AI-ARK MCP tool. Returns the parsed payload, or {} on any failure
     (logged, never raised). Async so the vault's event loop is never blocked while we wait."""
@@ -446,6 +459,12 @@ async def enrich_async(people: list[dict], want_phone: bool = True) -> list[dict
         # 1. Fire an email_finder job for everyone we can identify (concurrently).
         eidx = [i for i, p in enumerate(people) if _has_id(p)]
         started = await asyncio.gather(*[_amcp(client, "email_finder", _email_args(people[i])) for i in eidx])
+        # If AI-ARK refused (e.g. out of credits) and nothing came back, surface that loudly rather
+        # than silently returning "0 found" and misreporting a spend that never happened.
+        ark_err = next((e for e in (_ark_error(s) for s in started) if e), "")
+        if ark_err and not any(_extract_email(s) for s in started):
+            return [{**p, "email": "", "phone": "", "enriched": False, "ark_error": ark_err}
+                    for p in people]
         pending: list[tuple[int, str]] = []
         for i, s in zip(eidx, started):
             em = _extract_email(s)
