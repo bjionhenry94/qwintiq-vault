@@ -115,6 +115,8 @@ create table if not exists extraction_log (
     input_excerpt text, created_at text not null);
 create table if not exists settings (
     name text primary key, value text not null, updated_at text not null);
+create table if not exists signal_gate (
+    token text primary key, payload text not null, expires_at text not null);
 """
 
 
@@ -330,6 +332,36 @@ def log_extraction(consultant_id: str | None, tool: str, reason: str, excerpt: s
       " values (?,?,?,?,?,?)", (uid(), consultant_id, tool, reason, excerpt[:400], _now()))
 
 
+# ---------- Supervised-gate snapshots (durable, cross-process, single-use) ----------
+# The partner-signal gate is a two-call handshake: a count call quotes N and hands back a token,
+# then a confirm call spends against it. The shortlist + count it quoted MUST survive between the
+# two calls even when they land on different workers/instances, or the process recycled in between.
+# Process memory does NOT guarantee that (the earlier in-memory dict silently "expired" every time
+# once deployed), so the snapshot is persisted here and consumed exactly once.
+
+def gate_put(token: str, payload: dict, ttl_s: int) -> None:
+    exp = (datetime.now(timezone.utc) + timedelta(seconds=max(1, int(ttl_s)))).isoformat()
+    q("insert into signal_gate (token, payload, expires_at) values (?,?,?)",
+      (token, json.dumps(payload), exp))
+
+
+def gate_take(token: str) -> dict | None:
+    """Return the snapshot for `token` once, then delete it (single-use). None if the token is
+    unknown or expired. Delete-on-read so one confirmation can never authorise two pulls."""
+    if not token:
+        return None
+    row = q("select payload, expires_at from signal_gate where token=?", (token,), fetch="one")
+    if not row:
+        return None
+    q("delete from signal_gate where token=?", (token,))  # consume it, pass or fail
+    if row["expires_at"] <= _now():
+        return None
+    try:
+        return json.loads(row["payload"])
+    except Exception:
+        return None
+
+
 # ---------- Secrets (admin-managed API keys, encrypted at rest) ----------
 # API keys the admin sets from /admin/settings are stored ENCRYPTED, keyed by a value derived
 # from SECRET_KEY (which lives in the host env, never in the DB). So a database dump on its own
@@ -394,3 +426,4 @@ def purge_expired(keep_log_days: int = 30) -> None:
     q("delete from access_tokens where expires_at <= ?", (now,))
     q("delete from access_tokens where revoked_at is not null and revoked_at <= ?", (cutoff,))
     q("delete from extraction_log where created_at <= ?", (cutoff,))
+    q("delete from signal_gate where expires_at <= ?", (now,))

@@ -15,7 +15,6 @@ import logging
 import os
 import re
 import secrets
-import time
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -237,22 +236,81 @@ def qwintiq_list_export(kind: str, filters: dict, max_rows: int, confirmation_ph
 
 # A supervised gate is a TWO-call handshake, so the count + the exact shortlist it was quoted for
 # MUST survive between the calls — otherwise the client has to re-send the candidate list perfectly
-# (and if it doesn't, the run fires on nothing) and the count is recomputed and can drift. We hold
-# the snapshot server-side under a one-time token instead. Single process, so an in-memory dict is
-# enough; it's short-lived and popped on use.
-_SIGNAL_GATE: dict[str, dict] = {}
+# (and if it doesn't, the run fires on nothing) and the count is recomputed and can drift. The
+# snapshot is held server-side under a one-time token in the DB (dal.gate_put / gate_take), NOT in
+# process memory. An in-memory dict silently "expired" on the very next call once deployed, because
+# the count call and the confirm call are separate HTTP requests with no guarantee of hitting the
+# same live process; the DB row is durable across workers, instances and restarts, and single-use.
 # A supervised confirm happens in minutes, not hours. Env-overridable so a test can prove real
 # time-based expiry without waiting 30 minutes.
 _GATE_TTL = int(os.environ.get("SIGNAL_GATE_TTL_S", str(30 * 60)))
 
 
-def _run_partner_pull(cfg: dict, candidates: list[dict], confirmation_phrase: str, cid) -> str:
-    task = json.dumps({"routine": cfg, "candidates": candidates,
-                       "confirmation_phrase": confirmation_phrase})
-    # Guard only the user-supplied candidates/phrase; the routine config is trusted vault data.
-    return run_framework("partner_signals", task, cid, "qwintiq_partner_signals",
-                         guard_text=json.dumps({"candidates": candidates,
-                                                "confirmation_phrase": confirmation_phrase}))
+def _run_partner_pull(cfg: dict, candidates: list[dict], confirmation_phrase: str, cid,
+                      cap_n: int | None = None) -> str:
+    """The paid Phase-D pull. Actually fetch the decision-makers at each candidate company from
+    AI-Ark (scoped by the company's domain, filtered to the routine's roles, capped per company),
+    tie each person to their company, de-duplicate, and return the finished people plus a plain
+    receipt. Never exceeds the confirmed number (Supervised) or the daily cap (Autopilot).
+
+    This is real data work, NOT an LLM prompt. The model can't reach AI-Ark, so running the
+    framework through it returned conversational filler and pulled nobody — the live bug this
+    replaces (it passed only because the mock LLM faked a 'RUN REPORT')."""
+    dm = cfg.get("decision_makers", {}) or {}
+    max_per = int(dm.get("max_per_company", 3) or 3)
+    hints = dm.get("ai_ark_dials_hint", {}) or {}
+    role_sets = [{"seniorities": g.get("seniority", []) or [],
+                  "departments": g.get("department", []) or [],
+                  "titles": g.get("title", []) or []}
+                 for g in hints.values() if isinstance(g, dict)]
+    if not role_sets:
+        role_sets = [{"seniorities": [], "departments": [], "titles": dm.get("target_roles", []) or []}]
+    candidates = candidates or []
+    total_cap = int(cap_n) if cap_n else max_per * max(1, len(candidates))
+    people: list[dict] = []
+    seen: set = set()
+    errors = 0
+    for co in candidates:
+        if len(people) >= total_cap:
+            break
+        try:
+            rows = aiark.pull_decision_makers(co, role_sets, min(max_per, total_cap - len(people)))
+        except DataUnavailable:
+            errors += 1  # one company's lookup blipped; keep going, don't fail the whole batch
+            continue
+        for r in rows:
+            key = (r.get("linkedin") or "", (r.get("full_name") or "").strip().lower())
+            if key == ("", ""):
+                key = (r.get("full_name", ""), r.get("company_name", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            people.append(r)
+            if len(people) >= total_cap:
+                break
+    if not people and errors:
+        raise DataUnavailable  # every company failed — the honest data-outage message, never "0 found"
+    cols = ["full_name", "title", "company_name", "website", "country", "linkedin"]
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+    w.writeheader()
+    w.writerows(people)
+    campaign = (cfg.get("lemlist", {}) or {}).get("campaign_name")
+    receipt = (f"Pulled {len(people)} decision-maker(s) across "
+               f"{len(candidates)} compan{'y' if len(candidates) == 1 else 'ies'}, "
+               f"about {len(people)} credits.")
+    return json.dumps({
+        "decision_makers": people,
+        "rows": len(people),
+        "csv": buf.getvalue(),
+        "credits_estimate": len(people),
+        "receipt": receipt,
+        "next": ("Show the user the receipt line. Then write openers for these people with "
+                 "qwintiq_icebreaker, and load them with qwintiq_lemlist_upload into "
+                 + (f"the '{campaign}' campaign" if campaign else "the routine's campaign")
+                 + ". Never message a real prospect during a test — use a draft or paused "
+                 "campaign, or a dummy lead."),
+    })
 
 
 @mcp.tool()
@@ -287,15 +345,19 @@ def qwintiq_partner_signals(routine_name: str = "", candidate_companies: list[di
 
     # Confirmation via the token from the gate call: the server already holds the shortlist + count.
     if gate_token and m:
-        snap = _SIGNAL_GATE.pop(gate_token, None)
-        if not snap or snap["exp"] < time.time():
+        snap = dal.gate_take(gate_token)  # durable + single-use; None if unknown or expired
+        if not snap:
             return json.dumps({"error": "That confirmation has expired. Re-run the routine to get a "
                                "fresh count and a new confirmation sentence."})
         if int(m.group(1).replace(",", "")) != snap["n"]:
+            # Wrong number: re-issue a fresh token carrying the same snapshot so they can retype
+            # without losing the shortlist (the old token was already consumed above).
+            retoken = secrets.token_urlsafe(16)
+            dal.gate_put(retoken, snap, _GATE_TTL)
             return json.dumps({"gate": f"The number must match. Show the user EXACTLY: 'I confirm to "
                                f"export this and use {snap['n']} amount of credits'.",
-                               "estimated_people": snap["n"], "gate_token": gate_token})
-        return _run_partner_pull(cfg, snap["candidates"], confirmation_phrase, cid)
+                               "estimated_people": snap["n"], "gate_token": retoken})
+        return _run_partner_pull(cfg, snap["candidates"], confirmation_phrase, cid, cap_n=snap["n"])
 
     # A phrase with no shortlist and no token = the shortlist was lost between calls. Never run on
     # an empty list; send them back to the gate.
@@ -312,9 +374,9 @@ def qwintiq_partner_signals(routine_name: str = "", candidate_companies: list[di
         est = aiark.count_people({"titles": dm.get("target_roles", []),
                                   "seniorities": first.get("seniority", []),
                                   "departments": first.get("department", [])})
-        n = min(est["total"], dm.get("max_per_company", 3) * len(candidate_companies))
+        n = max(1, int(min(est["total"], int(dm.get("max_per_company", 3) or 3) * len(candidate_companies))))
         token = secrets.token_urlsafe(16)
-        _SIGNAL_GATE[token] = {"candidates": candidate_companies, "n": n, "exp": time.time() + _GATE_TTL}
+        dal.gate_put(token, {"candidates": candidate_companies, "n": n}, _GATE_TTL)
         return json.dumps({
             "qualified_note": "Candidates received. Free qualify + count done; the paid pull is gated.",
             "estimated_people": n,
@@ -325,8 +387,16 @@ def qwintiq_partner_signals(routine_name: str = "", candidate_companies: list[di
                      "Do NOT re-send candidate_companies."),
         })
 
-    # Legacy / autopilot / one-shot: candidates+phrase on one call still works; autopilot pulls.
-    return _run_partner_pull(cfg, candidate_companies or [], confirmation_phrase, cid)
+    # Autopilot: standing permission, pull up to the daily cap (no typed phrase needed). Legacy
+    # one-shot (candidates + phrase together) still works, capped at the number they confirmed.
+    if autopilot:
+        cap_n = int(cfg.get("daily_credit_cap") or 0)
+        if cap_n <= 0:
+            return json.dumps({"error": "This routine is on autopilot but has no daily credit cap "
+                               "saved, so it can't pull on its own. Set a cap first."})
+        return _run_partner_pull(cfg, candidate_companies or [], confirmation_phrase, cid, cap_n=cap_n)
+    cap_n = int(m.group(1).replace(",", "")) if m else None
+    return _run_partner_pull(cfg, candidate_companies or [], confirmation_phrase, cid, cap_n=cap_n)
 
 
 # ---------- Lemlist: the vault adds finished leads to a campaign, server-side ----------

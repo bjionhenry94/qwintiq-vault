@@ -291,6 +291,69 @@ def export_rows(filters: dict, kind: str, cap: int) -> list[dict]:
     return rows[:cap]
 
 
+# ---------- Partner-signal pull: decision-makers AT one company (scoped by domain) ----------
+
+def _domain_of(website: str) -> str:
+    """Reduce a website/URL to a bare domain AI-ARK can match a company on."""
+    d = (website or "").strip().lower()
+    for pre in ("https://", "http://"):
+        if d.startswith(pre):
+            d = d[len(pre):]
+    if d.startswith("www."):
+        d = d[4:]
+    return d.split("/")[0].strip()
+
+
+def pull_decision_makers(company: dict, role_sets: list[dict], cap: int) -> list[dict]:
+    """Pull up to `cap` decision-makers AT one company, tied to it by domain, across the given
+    role_sets (each = {seniorities, departments, titles}). This is the partner-signal Phase-D pull:
+    real credits track the rows returned, and it never returns more than `cap`. Mock mode returns
+    deterministic rows so the flow is exercised without a key. One people_search per role set until
+    the cap is filled — so the credit spend is bounded by `cap`, not by the number of role sets."""
+    cap = int(cap)
+    if cap <= 0:
+        return []
+    domain = _domain_of(company.get("website") or company.get("domain") or "")
+    cname = company.get("name") or company.get("company_name") or ""
+    if _mock():
+        base = (cname or domain or "Company").split(".")[0].title()
+        titles = ["Head of Partnerships", "Founder", "Head of Communications"]
+        return [{"full_name": f"{base} DM {i + 1}", "title": titles[i % len(titles)],
+                 "company_name": cname or base, "website": domain or "mock.example",
+                 "country": "", "linkedin": ""} for i in range(min(cap, 3))]
+    rows: list[dict] = []
+    seen: set = set()
+    for rs in (role_sets or [{}]):
+        if len(rows) >= cap:
+            break
+        args: dict = {"page": 0, "size": min(100, cap - len(rows))}
+        if domain:
+            args["companyDomain"] = domain
+        elif cname:
+            args["companyName"] = cname
+        else:
+            break  # nothing to tie the search to — never pull an untethered company-wide list
+        if rs.get("seniorities"):
+            args["seniority"] = ",".join(rs["seniorities"])
+        if rs.get("departments"):
+            args["department"] = ",".join(rs["departments"])
+        if rs.get("titles"):
+            args["title"] = ",".join(rs["titles"])
+        payload = _search("people_search", args)
+        for p in (payload.get("content") or []):
+            fr = _flatten_person(p)
+            key = (fr.get("linkedin") or "", (fr.get("full_name") or "").strip().lower())
+            if key == ("", ""):
+                key = (fr.get("full_name", ""), fr.get("company_name", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(fr)
+            if len(rows) >= cap:
+                break
+    return rows[:cap]
+
+
 # ---------- Enrichment: add email + mobile to a known person ----------
 # The enrich path talks to the SAME hosted MCP as search (email_finder / mobile_phone_finder), but
 # is intentionally fail-safe: any transport or parsing problem degrades to "no contact found" for

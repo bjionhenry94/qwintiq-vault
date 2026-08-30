@@ -168,7 +168,9 @@ def main():
     ph = f"I confirm to export this and use {g.get('estimated_people')} amount of credits"
     proceed = asyncio.run(mcp_call(token, "qwintiq_partner_signals",
                                    {"routine_name": rname, "confirmation_phrase": ph, "gate_token": g.get("gate_token")}))
-    check("signals confirm via token (candidates NOT re-sent) runs", "RUN REPORT" in proceed)
+    pj = json.loads(proceed)
+    check("signals confirm via token pulls real decision-makers (not an LLM essay)",
+          isinstance(pj.get("decision_makers"), list) and pj.get("rows", 0) >= 1)
     reuse = asyncio.run(mcp_call(token, "qwintiq_partner_signals",
                                  {"routine_name": rname, "confirmation_phrase": ph, "gate_token": g.get("gate_token")}))
     check("signals token is one-time", "expired" in reuse.lower())
