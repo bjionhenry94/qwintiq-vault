@@ -495,8 +495,19 @@ async def _amcp(client, tool: str, arguments: dict) -> dict:
 # batch finishes in seconds and NEVER blocks the server — awaits yield the loop so ping and other
 # calls stay live (mcp 1.x runs sync tools on the event loop, so a sleeping sync tool would hang
 # the whole vault — which is the bug this replaced).
-_POLL_BUDGET_S = 20.0
-_POLL_EVERY_S = 2.0
+_POLL_BUDGET_S = 20.0     # base; the real budget scales with how many jobs are still pending
+_POLL_EVERY_S = 2.5
+_POLL_SIZE = 3            # ask for a few results per job, not 1 — the person's email may not be row 0
+_MAX_CONCURRENCY = 5     # AI-ARK rate limit is ~5/s; never fire more calls than that at once
+_ENRICH_BATCH_CAP = 12   # people per call. Larger async batches don't finish inside a tool-call
+#   timeout and silently under-deliver (the live "1 of 6 / 5 of 34" bug: the SAME person hit at
+#   N=3 and missed at N=6 because its job hadn't resolved in the fixed 20s window). Above the cap
+#   the tool does the first _ENRICH_BATCH_CAP and tells the user to run again for the rest.
+
+
+def _poll_budget_s(pending: int) -> float:
+    """More pending jobs need more time to all reach DONE, but stay well under a tool-call timeout."""
+    return min(42.0, 14.0 + 3.0 * pending)
 
 
 async def enrich_async(people: list[dict], want_phone: bool = True) -> list[dict]:
@@ -519,9 +530,15 @@ async def enrich_async(people: list[dict], want_phone: bool = True) -> list[dict
     emails = [""] * len(people)
     phones = [""] * len(people)
     async with httpx.AsyncClient(timeout=30) as client:
-        # 1. Fire an email_finder job for everyone we can identify (concurrently).
+        sem = asyncio.Semaphore(_MAX_CONCURRENCY)  # respect AI-ARK's ~5/s rate limit on every call
+
+        async def call(tool, args):
+            async with sem:
+                return await _amcp(client, tool, args)
+
+        # 1. Fire an email_finder job for everyone we can identify (throttled to the rate limit).
         eidx = [i for i, p in enumerate(people) if _has_id(p)]
-        started = await asyncio.gather(*[_amcp(client, "email_finder", _email_args(people[i])) for i in eidx])
+        started = await asyncio.gather(*[call("email_finder", _email_args(people[i])) for i in eidx])
         # If AI-ARK refused (e.g. out of credits) and nothing came back, surface that loudly rather
         # than silently returning "0 found" and misreporting a spend that never happened.
         ark_err = next((e for e in (_ark_error(s) for s in started) if e), "")
@@ -537,12 +554,14 @@ async def enrich_async(people: list[dict], want_phone: bool = True) -> list[dict
                 track = s.get("trackId") or s.get("trackID") or s.get("track_id")
                 if track:
                     pending.append((i, track))
-        # 2. Poll the pending jobs together on a short, non-blocking budget.
-        deadline = time.monotonic() + _POLL_BUDGET_S
+        # 2. Poll the pending jobs together on a budget that scales with how many are still open,
+        #    so a bigger batch actually gets time to finish instead of being abandoned at a fixed
+        #    20s (the live "same person hits at N=3, misses at N=6" flakiness).
+        deadline = time.monotonic() + _poll_budget_s(len(pending))
         while pending and time.monotonic() < deadline:
             await asyncio.sleep(_POLL_EVERY_S)
             polled = await asyncio.gather(
-                *[_amcp(client, "email_finder_results", {"trackId": t, "size": 1}) for _, t in pending])
+                *[call("email_finder_results", {"trackId": t, "size": _POLL_SIZE}) for _, t in pending])
             still: list[tuple[int, str]] = []
             for (i, t), res in zip(pending, polled):
                 em = _extract_email(res)
@@ -551,11 +570,11 @@ async def enrich_async(people: list[dict], want_phone: bool = True) -> list[dict
                 elif str(res.get("state", "")).upper() != "DONE":
                     still.append((i, t))  # keep waiting; DONE-with-no-email drops out
             pending = still
-        # 3. Phones — best-effort, one concurrent call each, no polling.
+        # 3. Phones — best-effort, throttled, no polling.
         if want_phone:
             pidx = [i for i, p in enumerate(people) if _phone_body(p)]
             phres = await asyncio.gather(
-                *[_amcp(client, "mobile_phone_finder", {"requestBody": json.dumps(_phone_body(people[i]))})
+                *[call("mobile_phone_finder", {"requestBody": json.dumps(_phone_body(people[i]))})
                   for i in pidx])
             for i, res in zip(pidx, phres):
                 phones[i] = _extract_phone(res)

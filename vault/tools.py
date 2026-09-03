@@ -641,7 +641,13 @@ async def qwintiq_enrich(people: list[dict], confirmation_phrase: str, include_p
     if confirmed != n:
         return (f"ENRICH REFUSED: the user confirmed {confirmed} but there are {n} people to "
                 f"enrich. Re-quote {n} and have them re-confirm.")
-    rows = await aiark.enrich_async(people or [], want_phone=include_phone)
+    # Cap the batch: large async batches don't all finish inside a tool-call window and silently
+    # under-deliver (the "1 of 6 / 5 of 34" flakiness). Do a reliable slice; report the rest as
+    # not-yet-done and not-charged, so the model runs again for them instead of losing them.
+    cap = aiark._ENRICH_BATCH_CAP
+    batch = (people or [])[:cap]
+    remaining = n - len(batch)
+    rows = await aiark.enrich_async(batch, want_phone=include_phone)
     ark_error = next((r.get("ark_error") for r in rows if r.get("ark_error")), "")
     if ark_error:
         return json.dumps({
@@ -653,6 +659,7 @@ async def qwintiq_enrich(people: list[dict], confirmation_phrase: str, include_p
                         "your QwintiQ admin to top up the AI-Ark balance, then run this again."),
             "note": "Show the user the 'receipt' line. Do NOT retry — a top-up is needed first.",
         })
+    processed = len(batch)
     found = sum(1 for r in rows if r.get("enriched"))
     found_email = sum(1 for r in rows if (r.get("email") or "").strip())
     found_phone = sum(1 for r in rows if (r.get("phone") or "").strip())
@@ -662,10 +669,14 @@ async def qwintiq_enrich(people: list[dict], confirmation_phrase: str, include_p
     if only_with_email:
         out_rows = [r for r in rows if (r.get("email") or "").strip()]
         dropped = len(rows) - len(out_rows)
-    # Billing is per attempt, not per hit, so the spend tracks the number of people, not the finds.
-    receipt = (f"Found emails for {found_email} of {n} people"
+    # Billing is per attempt, not per hit, so the spend tracks the number processed, not the finds.
+    receipt = (f"Found emails for {found_email} of {processed} people"
                + (f" and mobiles for {found_phone}" if include_phone else "")
-               + f" (about {n} credits).")
+               + f" (about {processed} credits).")
+    if remaining > 0:
+        receipt += (f" NOTE: only the first {processed} were done this run; the other {remaining} "
+                    f"were not touched or charged — run enrich again on them (in batches of "
+                    f"{cap} or fewer) to finish.")
     if only_with_email:
         receipt += (f" Returning only the {len(out_rows)} with an email; {dropped} dropped."
                     if dropped else " Every person had an email.")
@@ -679,9 +690,12 @@ async def qwintiq_enrich(people: list[dict], confirmation_phrase: str, include_p
         "found_email": found_email,
         "found_phone": found_phone,
         "dropped_no_email": dropped,
+        "processed": processed,
+        "remaining": remaining,
         "total": n,
         "receipt": receipt,
-        "note": "Show the 'receipt' line, then the people. Blank email/phone = not found.",
+        "note": ("Show the 'receipt' line, then the people. Blank email/phone = not found. "
+                 "If 'remaining' > 0, run enrich again on those people to finish."),
     })
 
 
