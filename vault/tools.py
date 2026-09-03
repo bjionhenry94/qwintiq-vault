@@ -351,8 +351,12 @@ def _run_partner_pull(cfg: dict, candidates: list[dict], confirmation_phrase: st
         "csv": buf.getvalue(),
         "credits_estimate": len(people),
         "receipt": receipt,
-        "next": ("Show the user the receipt line. Then write openers for these people with "
-                 "qwintiq_icebreaker, and load them with qwintiq_lemlist_upload into "
+        "next": ("Show the user the receipt line. These rows have NO emails yet. Next, get their "
+                 "emails: call qwintiq_enrich with these people, passing each person's 'linkedin' "
+                 "URL (the best identifier), and ask the user to type the enrich confirmation "
+                 "sentence; if they only want people with an email, pass only_with_email=true. "
+                 "Then write openers with qwintiq_icebreaker, and load them with "
+                 "qwintiq_lemlist_upload into "
                  + (f"the '{campaign}' campaign" if campaign else "the routine's campaign")
                  + ". Never message a real prospect during a test — use a draft or paused "
                  "campaign, or a dummy lead."),

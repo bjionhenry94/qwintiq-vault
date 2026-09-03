@@ -65,6 +65,9 @@ proceed = json.loads(tools.qwintiq_partner_signals(routine_name=rname, confirmat
 check("confirm pulls real decision-makers (not an LLM essay)",
       isinstance(proceed.get("decision_makers"), list) and proceed.get("rows", 0) >= 1)
 check("pull never exceeds the confirmed number", 0 < proceed.get("rows", 0) <= n)
+nxt = (proceed.get("next") or "").lower()
+check("confirm's next step chains to qwintiq_enrich by LinkedIn (rows have no emails yet)",
+      "qwintiq_enrich" in nxt and "linkedin" in nxt and "no emails yet" in nxt)
 
 reuse = json.loads(tools.qwintiq_partner_signals(routine_name=rname, confirmation_phrase=ph,
                                                  gate_token=g["gate_token"]))
