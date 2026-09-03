@@ -31,8 +31,29 @@ def _key() -> str | None:
     return dal.get_secret("LEMLIST_API_KEY")
 
 
+def _explicit_mock() -> bool:
+    """Mock ONLY when a developer/test asks for it. A missing key is NOT a reason to fake data."""
+    return os.environ.get("VAULT_LEMLIST", "").lower() == "mock"
+
+
 def _mock() -> bool:
-    return os.environ.get("VAULT_LEMLIST", "").lower() == "mock" or not _key()
+    return _explicit_mock() or not _key()
+
+
+NOT_CONNECTED = ("Lemlist isn't connected to QwintiQ yet, so nothing can be listed or uploaded. "
+                 "Your QwintiQ admin needs to add the Lemlist key in the Control Panel → Settings "
+                 "(the 'Lemlist key' row). Nothing was changed in Lemlist. Tell the user plainly and "
+                 "keep the finished list ready to load once it's connected.")
+
+
+def connection_status() -> str:
+    """'' when Lemlist can really be used (a key is set, or a test explicitly asked for mock data);
+    otherwise the plain-English reason. Callers return this INSTEAD of fake campaigns — the live
+    bug was the vault answering 'campaign not recognised' against invented cam_mock… campaigns
+    because no key had ever been entered, and nobody could tell."""
+    if _explicit_mock() or _key():
+        return ""
+    return NOT_CONNECTED
 
 
 def _get(path: str) -> object:

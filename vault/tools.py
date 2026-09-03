@@ -194,15 +194,61 @@ def qwintiq_list_count(what_you_sell: str, industry: str, country: str,
     })
 
 
+# The ONLY filter keys the market export honours (see aiark._company_args / _people_args). Anything
+# else used to be dropped silently — so a curated shortlist passed as `company_domains` pulled a
+# generic worldwide market instead and charged 50 credits for unusable rows (the live bug). Now any
+# key outside this set refuses BEFORE the credit gate and BEFORE any AI-Ark call.
+_EXPORT_FILTER_KEYS = {"industry", "country", "size_min", "size_max", "keywords", "exclude_keywords",
+                       "seniorities", "departments", "titles", "exclude_titles"}
+# Keys that mean "these specific companies/people" — the one thing a market export can never do.
+_TARGETING_KEYS = {"company_domains", "domains", "websites", "companies", "company_names",
+                   "company_name", "company_domain", "company", "linkedin", "linkedin_urls",
+                   "people", "names", "full_names"}
+
+
+def _refuse_unsupported_filters(filters: dict, kind: str) -> str:
+    """Return a refusal string if `filters` asks for something the market export can't honour,
+    else ''. Refusing here is what stops a mis-targeted request from spending anything."""
+    keys = set((filters or {}).keys())
+    targeting = sorted(keys & _TARGETING_KEYS)
+    unknown = sorted(keys - _EXPORT_FILTER_KEYS - _TARGETING_KEYS)
+    if not targeting and not unknown:
+        return ""
+    what = "decision-makers" if kind != "companies" else "companies"
+    parts = ["EXPORT REFUSED (nothing was pulled or charged)."]
+    if targeting:
+        parts.append(
+            f"This tool exports a MARKET by brief (industry, country, size, roles); it cannot target "
+            f"specific companies, so it does not accept {', '.join(targeting)}. To get the {what} AT a "
+            f"specific list of companies, call qwintiq_company_people with those companies (or confirm "
+            f"a partner-signal routine, which pulls per company) — then qwintiq_enrich for their "
+            f"emails by LinkedIn URL.")
+    if unknown:
+        parts.append(f"Unrecognised filter key(s): {', '.join(unknown)}. Supported keys are: "
+                     f"{', '.join(sorted(_EXPORT_FILTER_KEYS))}.")
+    parts.append("Tell the user plainly which tool fits, then continue with that one.")
+    return " ".join(parts)
+
+
 @mcp.tool()
 @_safe
 def qwintiq_list_export(kind: str, filters: dict, max_rows: int, confirmation_phrase: str) -> str:
-    """Export the confirmed list (kind: 'companies' or 'decision_makers') as CSV text.
+    """Export a MARKET by brief (kind: 'companies' or 'decision_makers') as CSV text.
+
+    This pulls a market described by filters — industry, country, size_min/size_max, keywords,
+    exclude_keywords, and for decision_makers also seniorities, departments, titles,
+    exclude_titles. It CANNOT target specific companies: it does not accept company_domains,
+    company names, websites or LinkedIn URLs and will refuse — before any spend — if you pass
+    them. To get the decision-makers AT a specific list of companies use qwintiq_company_people
+    (or a partner-signal routine's confirm step), then qwintiq_enrich for their emails.
 
     HARD GATE: this only runs if confirmation_phrase is the sentence the USER typed —
     'I confirm to export this and use X amount of credits' — and X equals max_rows.
     The vault validates it server-side and refuses otherwise. One confirmation = one export.
     """
+    refusal = _refuse_unsupported_filters(filters, kind)
+    if refusal:
+        return refusal
     m = _CONFIRM_RE.search(confirmation_phrase or "")
     if not m:
         return ("EXPORT REFUSED: the confirmation sentence is missing or not in the agreed "
@@ -315,6 +361,97 @@ def _run_partner_pull(cfg: dict, candidates: list[dict], confirmation_phrase: st
 
 @mcp.tool()
 @_safe
+def qwintiq_company_people(companies: list[dict], confirmation_phrase: str,
+                           max_per_company: int = 2, roles: list[str] | None = None,
+                           seniorities: list[str] | None = None) -> str:
+    """Find the decision-makers AT a specific list of companies (the per-company pull).
+
+    Use this when the user already has the companies — a shortlist from a signal, a target
+    account list, a set of domains — and wants the people inside them. Pass each company as
+    {"name": ..., "website": "acme.com"} (the website/domain is what ties the search to the right
+    company). Optional: roles (titles, e.g. ["Founder", "CEO"]), seniorities (e.g. ["founder",
+    "c_suite"]), and max_per_company (default 2). Returns the people with name, title, company,
+    website, country and LinkedIn URL — then call qwintiq_enrich with their LinkedIn URLs to get
+    emails. This is NOT qwintiq_list_export (which pulls a whole market by brief and cannot target
+    named companies).
+
+    HARD GATE: about one credit per person, so it only runs if confirmation_phrase is the
+    sentence the USER typed — 'I confirm to export this and use X amount of credits' — where X
+    equals max_per_company × number of companies. Quote them the sentence with the real number
+    and wait for them to type it; never type it for them.
+    """
+    companies = [c for c in (companies or []) if isinstance(c, dict)]
+    if not companies:
+        return "COMPANY PULL REFUSED: no companies were given. Pass a list of {name, website}."
+    untethered = [c.get("name") or "?" for c in companies
+                  if not (c.get("website") or c.get("domain") or c.get("name") or c.get("company_name"))]
+    if untethered:
+        return ("COMPANY PULL REFUSED (nothing charged): every company needs a website/domain or at "
+                "least a name so the search is tied to the right company. Missing on: "
+                + ", ".join(untethered))
+    max_per = max(1, int(max_per_company or 1))
+    n = max_per * len(companies)
+    m = _CONFIRM_RE.search(confirmation_phrase or "")
+    if not m:
+        return (f"COMPANY PULL REFUSED: this spends about {n} credits ({max_per} per company × "
+                f"{len(companies)} companies), so it needs the user's typed go-ahead. Show them "
+                f"EXACTLY: 'I confirm to export this and use {n} amount of credits' and wait for "
+                f"them to type it themselves.")
+    confirmed = int(m.group(1).replace(",", ""))
+    if confirmed != n:
+        return (f"COMPANY PULL REFUSED: the user confirmed {confirmed} but this pull is {n} "
+                f"({max_per} per company × {len(companies)} companies). Re-quote {n} and re-confirm.")
+    role_sets = [{"seniorities": seniorities or [], "departments": [], "titles": roles or []}]
+    people: list[dict] = []
+    seen: set = set()
+    errors = 0
+    per_company: dict[str, int] = {}
+    for co in companies:
+        try:
+            rows = aiark.pull_decision_makers(co, role_sets, max_per)
+        except DataUnavailable:
+            errors += 1
+            continue
+        label = co.get("name") or co.get("website") or "?"
+        per_company[label] = len(rows)
+        for r in rows:
+            key = (r.get("linkedin") or "", (r.get("full_name") or "").strip().lower())
+            if key == ("", ""):
+                key = (r.get("full_name", ""), r.get("company_name", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            people.append(r)
+    if not people and errors:
+        raise DataUnavailable  # every company failed — honest outage message, never "0 found"
+    cols = ["full_name", "title", "company_name", "website", "country", "linkedin"]
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+    w.writeheader()
+    w.writerows(people)
+    empty = [k for k, v in per_company.items() if v == 0]
+    receipt = (f"Found {len(people)} decision-maker(s) across {len(companies)} "
+               f"compan{'y' if len(companies) == 1 else 'ies'} — about {len(people)} credits "
+               f"(confirmed at {confirmed}).")
+    if empty:
+        receipt += f" No matching people at: {', '.join(empty)}."
+    if errors:
+        receipt += f" {errors} compan{'y' if errors == 1 else 'ies'} couldn't be looked up and can be retried."
+    return json.dumps({
+        "people": people,
+        "rows": len(people),
+        "per_company": per_company,
+        "csv": buf.getvalue(),
+        "credits_estimate": len(people),
+        "receipt": receipt,
+        "next": ("Show the user the receipt line. To get their emails, call qwintiq_enrich with these "
+                 "people — pass each person's 'linkedin' URL (best match rate) — and ask the user to "
+                 "type the enrich confirmation sentence."),
+    })
+
+
+@mcp.tool()
+@_safe
 def qwintiq_partner_signals(routine_name: str = "", candidate_companies: list[dict] | None = None,
                             confirmation_phrase: str = "", gate_token: str = "") -> str:
     """Run QwintiQ's daily partner/PR signal routine.
@@ -410,6 +547,13 @@ def qwintiq_lemlist_campaigns() -> str:
     or to confirm the exact campaign name before an upload. Returns the campaigns on the
     account; present the names and ask which one.
     """
+    # Never invent campaigns. If no Lemlist key has been entered, say so — the live bug was the
+    # model telling the user "your campaign isn't recognised" against fake cam_mock… campaigns.
+    not_connected = lemlist.connection_status()
+    if not_connected:
+        return json.dumps({"error": "LEMLIST NOT CONNECTED", "campaigns": [], "receipt": not_connected,
+                           "note": "Show the user the 'receipt' line. Do not retry until the admin has "
+                                   "added the Lemlist key."})
     campaigns = lemlist.list_campaigns()
     return json.dumps({
         "campaigns": campaigns,
@@ -429,6 +573,11 @@ def qwintiq_lemlist_upload(campaign: str, leads: list[dict]) -> str:
     the upload itself — the Lemlist key and mechanics never leave the vault — and returns a
     plain-English receipt. Re-running is safe: leads already in the campaign are de-duplicated.
     """
+    not_connected = lemlist.connection_status()
+    if not_connected:
+        return json.dumps({"error": "LEMLIST NOT CONNECTED", "added": 0, "receipt": not_connected,
+                           "note": "Show the user the 'receipt' line. Keep the leads; nothing was "
+                                   "uploaded and nothing will be until the admin adds the key."})
     target = lemlist.resolve_campaign(campaign)
     if not target:
         available = lemlist.list_campaigns()
@@ -459,9 +608,11 @@ def qwintiq_lemlist_upload(campaign: str, leads: list[dict]) -> str:
 
 @mcp.tool()
 @_safe_async
-async def qwintiq_enrich(people: list[dict], confirmation_phrase: str, include_phone: bool = False) -> str:
+async def qwintiq_enrich(people: list[dict], confirmation_phrase: str, include_phone: bool = False,
+                         only_with_email: bool = False) -> str:
     """Find the missing work EMAIL (and, only when include_phone=True, the mobile) for people you
-    already have.
+    already have. Set only_with_email=True when the user wants ONLY the people an email was found
+    for (e.g. "just give me the ones with emails") — the rest are dropped and counted, not returned.
 
     Use this when the user has a list of people — names, companies, or LinkedIn URLs — but is
     missing their emails, and wants them filled in before outreach. Identify each person by a
@@ -499,17 +650,34 @@ async def qwintiq_enrich(people: list[dict], confirmation_phrase: str, include_p
             "note": "Show the user the 'receipt' line. Do NOT retry — a top-up is needed first.",
         })
     found = sum(1 for r in rows if r.get("enriched"))
+    found_email = sum(1 for r in rows if (r.get("email") or "").strip())
+    found_phone = sum(1 for r in rows if (r.get("phone") or "").strip())
     mock = bool(rows and rows[0].get("mock"))
+    out_rows = rows
+    dropped = 0
+    if only_with_email:
+        out_rows = [r for r in rows if (r.get("email") or "").strip()]
+        dropped = len(rows) - len(out_rows)
     # Billing is per attempt, not per hit, so the spend tracks the number of people, not the finds.
-    receipt = f"Found contact details for {found} of {n} people (about {n} credits)."
+    receipt = (f"Found emails for {found_email} of {n} people"
+               + (f" and mobiles for {found_phone}" if include_phone else "")
+               + f" (about {n} credits).")
+    if only_with_email:
+        receipt += (f" Returning only the {len(out_rows)} with an email; {dropped} dropped."
+                    if dropped else " Every person had an email.")
+    if include_phone and found_phone == 0 and not mock:
+        receipt += " No mobiles came back — phone coverage is best-effort and often thin."
     if mock:
         receipt += " (Demo mode — no data key is set, so these are placeholder details.)"
     return json.dumps({
-        "people": rows,
+        "people": out_rows,
         "found": found,
+        "found_email": found_email,
+        "found_phone": found_phone,
+        "dropped_no_email": dropped,
         "total": n,
         "receipt": receipt,
-        "note": "Show the 'receipt' line, then the enriched people. Blank email/phone = not found.",
+        "note": "Show the 'receipt' line, then the people. Blank email/phone = not found.",
     })
 
 
