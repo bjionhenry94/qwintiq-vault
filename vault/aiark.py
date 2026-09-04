@@ -387,10 +387,14 @@ def _has_id(p: dict) -> bool:
 
 
 def _email_args(p: dict) -> dict:
+    # A LinkedIn URL is a UNIQUE key, so search on it ALONE. Adding fullName + companyDomain on top
+    # AND-s three fields, so any mismatch in AI-ARK's stored name/domain (e.g. "Ryan Y." vs the
+    # profile's real name) excludes the right person. Only fall back to name + company when there
+    # is no LinkedIn URL (then take a few candidates so a valid email in row 1-2 is still caught).
     linkedin, name, domain, company = _person_id(p)
-    args: dict = {"size": 1}
     if linkedin:
-        args["linkedin"] = linkedin
+        return {"size": 1, "linkedin": linkedin}
+    args: dict = {"size": 3}
     if name:
         args["fullName"] = name
     if domain:
@@ -499,7 +503,9 @@ _POLL_BUDGET_S = 20.0     # base; the real budget scales with how many jobs are 
 _POLL_EVERY_S = 2.5
 _POLL_SIZE = 3            # ask for a few results per job, not 1 — the person's email may not be row 0
 _MAX_CONCURRENCY = 5     # AI-ARK rate limit is ~5/s; never fire more calls than that at once
-_ENRICH_BATCH_CAP = 12   # people per call. Larger async batches don't finish inside a tool-call
+_ENRICH_BATCH_CAP = 20   # people per call = the client's real daily max. Was 12, which capped a
+#   normal 10-20/day run and made single runs return fewer than before (the "gone down since the
+#   update" report). Larger async batches risk not finishing inside a tool-call
 #   timeout and silently under-deliver (the live "1 of 6 / 5 of 34" bug: the SAME person hit at
 #   N=3 and missed at N=6 because its job hadn't resolved in the fixed 20s window). Above the cap
 #   the tool does the first _ENRICH_BATCH_CAP and tells the user to run again for the rest.
@@ -507,7 +513,7 @@ _ENRICH_BATCH_CAP = 12   # people per call. Larger async batches don't finish in
 
 def _poll_budget_s(pending: int) -> float:
     """More pending jobs need more time to all reach DONE, but stay well under a tool-call timeout."""
-    return min(42.0, 14.0 + 3.0 * pending)
+    return min(55.0, 14.0 + 3.0 * pending)
 
 
 async def enrich_async(people: list[dict], want_phone: bool = True) -> list[dict]:
