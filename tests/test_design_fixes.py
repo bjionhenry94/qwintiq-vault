@@ -135,6 +135,21 @@ check("...no paid search fired", not any(t.endswith("_search") and t not in CATA
 out = tools.qwintiq_list_count(what_you_sell="x", industry="software", country="United States")
 check("exact names still count", json.loads(out)["companies_matching"] == 4, out[:120])
 
+# ---- provider error envelope -> plain refusal naming the keyword cause (live: 401 on keyword search) ----
+_orig = aiark._mcp_call
+def refusing_mcp_call(tool, arguments, strict=False):
+    if tool.endswith("_search") and ("keyword" in arguments or "companyKeyword" in arguments):
+        return {"error": "401 service unavailable"}
+    return _orig(tool, arguments, strict)
+aiark._mcp_call = refusing_mcp_call
+out = tools.qwintiq_list_export(kind="companies", filters={"industry": "software", "keywords": ["payroll"]},
+                                max_rows=1, confirmation_phrase=PHRASE.format(n=1))
+check("keyword search rejected by provider -> REFUSED BY THE DATA PROVIDER, keyword cause named",
+      "REFUSED BY THE DATA PROVIDER" in out and "keyword" in out and "nothing was charged" in out, out[:200])
+out = tools.qwintiq_list_count(what_you_sell="x", industry="software", country="United States", keywords=["payroll"])
+check("...same on count", "REFUSED BY THE DATA PROVIDER" in out, out[:120])
+aiark._mcp_call = _orig
+
 # ---- 11. export dedupe keeps rows with nothing to dedupe on ----
 out = json.loads(tools.qwintiq_list_export(kind="companies", filters={"industry": "software"},
                                            max_rows=4, confirmation_phrase=PHRASE.format(n=4)))

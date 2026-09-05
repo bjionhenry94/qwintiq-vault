@@ -45,6 +45,16 @@ class DataKeyMissing(Exception):
     back to env keys — see dal.get_secret)."""
 
 
+class ProviderRefused(DataUnavailable):
+    """The provider answered a search with an error envelope instead of results (live: a 401 on
+    any search that carries a keyword filter — keyword search is not enabled on the account). Not
+    a charge and not an outage, so the consultant gets the real reason, not 'try again later'."""
+
+    def __init__(self, tool: str, message: str, args: dict):
+        self.tool, self.message, self.args = tool, message, dict(args)
+        super().__init__(message)
+
+
 class UnresolvedFilter(Exception):
     """A brief's industry/location is not a name AI-Ark's catalog recognises. Raised BEFORE any
     paid search, because an unknown enum passed through would be ignored upstream and pull (and
@@ -56,7 +66,8 @@ class UnresolvedFilter(Exception):
                 f"with that exact name." if options else
                 f" Ask the user for a different {kind} wording (a plain word like 'software' or "
                 f"'health care'; a country or state name for location).")
-        super().__init__(f"REFUSED (nothing was pulled or charged): '{text}' is not a {kind} the data "
+        an = "an" if kind[0] in "aeiou" else "a"
+        super().__init__(f"REFUSED (nothing was pulled or charged): '{text}' is not {an} {kind} the data "
                          f"provider recognises, so searching on it would pull the wrong market.{hint}")
 
 
@@ -168,6 +179,16 @@ def _resolve_industry(text: str) -> str:
         opts = [o for o in (payload.get("industries") or []) if isinstance(o, str)]
         exact = next((o for o in opts if o.lower() == part.lower()), None)
         if exact is None:
+            if not opts:
+                # The catalog search is a plain substring match ('recruitment' finds nothing, though
+                # 'staffing and recruiting' exists). Gather SUGGESTIONS from word stems — free
+                # catalog lookups, still a refusal, never a substitution.
+                for w in part.lower().split():
+                    stem = w[:5] if len(w) > 5 else w
+                    if len(stem) < 4:
+                        continue
+                    more = _mcp_call("industry_search", {"query": stem}, strict=False)
+                    opts += [o for o in (more.get("industries") or []) if isinstance(o, str) and o not in opts]
             raise UnresolvedFilter("industry", part, opts[:12])
         resolved.append(exact)
     return ",".join(resolved)
@@ -245,10 +266,10 @@ def _search(tool: str, args: dict) -> dict:
     if not isinstance(payload, dict) or "totalElements" not in payload:
         keys = list(payload)[:10] if isinstance(payload, dict) else type(payload).__name__
         err = payload.get("error") or payload.get("message") or payload.get("text") if isinstance(payload, dict) else ""
-        # Server-side only: the provider's own words (never shown to a consultant) so an argument
-        # the provider rejects can be diagnosed from the host log instead of guessed at.
         _log.warning("ai-ark %s returned no totalElements; keys=%s; error=%s; args=%s",
                      tool, keys, str(err)[:300], sorted(args))
+        if err:
+            raise ProviderRefused(tool, str(err)[:160], args)
         raise DataUnavailable
     return payload
 

@@ -22,7 +22,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from auth.context import current_consultant
 from db import dal
 from vault import aiark, lemlist
-from vault.aiark import DataKeyMissing, DataUnavailable, UnresolvedFilter
+from vault.aiark import DataKeyMissing, DataUnavailable, ProviderRefused, UnresolvedFilter
 from vault.engine import REFUSAL, meta_guard, run_framework
 
 _log = logging.getLogger("qwintiq.vault")
@@ -36,6 +36,20 @@ _SAFE_ERROR = ("Something didn't go through on the QwintiQ side just now. Please
                "moment — if it keeps happening, let your QwintiQ admin know. Nothing to fix on your end.")
 _DATA_ERROR = ("The data lookup is temporarily unavailable. Please try again shortly — if it "
                "persists, your QwintiQ admin needs to check the vault's data connection.")
+def _provider_refused_message(e: "ProviderRefused") -> str:
+    """Plain words for a provider error envelope. Names the likely cause when the request carried
+    a keyword filter (the live case: the account's plan does not include keyword search)."""
+    keyworded = any(k in e.args for k in ("keyword", "companyKeyword"))
+    why = (" This account's data plan does not include keyword filtering, so any brief with "
+           "keywords is rejected — drop the keywords (use industry, size, roles and titles "
+           "instead) or ask the data provider to enable keyword search."
+           if keyworded else
+           " The request itself was rejected, so retrying the same brief will not help — change "
+           "the brief, or ask your QwintiQ admin to check the data account.")
+    return (f"REFUSED BY THE DATA PROVIDER (nothing was charged): it answered '{e.message}'."
+            + why)
+
+
 _NOKEY_ERROR = ("NOT CONNECTED (nothing was charged): no AI-Ark data key is saved in the QwintiQ "
                 "Control Panel → Settings. Ask your QwintiQ admin to add it, then try again. The vault "
                 "never runs data work on any other key.")
@@ -51,6 +65,9 @@ def _safe(fn):
         except DataKeyMissing:
             _log.warning("no AI-Ark key saved; %s refused before any call", fn.__name__)
             return _NOKEY_ERROR
+        except ProviderRefused as e:
+            _log.warning("provider refused %s: %s", fn.__name__, e.message)
+            return _provider_refused_message(e)
         except DataUnavailable:
             _log.warning("data lookup failed in %s", fn.__name__)
             return _DATA_ERROR
@@ -73,6 +90,9 @@ def _safe_async(fn):
         except DataKeyMissing:
             _log.warning("no AI-Ark key saved; %s refused before any call", fn.__name__)
             return _NOKEY_ERROR
+        except ProviderRefused as e:
+            _log.warning("provider refused %s: %s", fn.__name__, e.message)
+            return _provider_refused_message(e)
         except DataUnavailable:
             _log.warning("data lookup failed in %s", fn.__name__)
             return _DATA_ERROR
@@ -265,9 +285,11 @@ def _refuse_unsupported_filters(filters: dict, kind: str) -> str:
 def qwintiq_list_export(kind: str, filters: dict, max_rows: int, confirmation_phrase: str) -> str:
     """Export a MARKET by brief (kind: 'companies' or 'decision_makers') as CSV text.
 
-    This pulls a market described by filters — industry, country, size_min/size_max, keywords,
-    and for decision_makers also seniorities, departments, titles, exclude_titles (there is no
-    exclude-keywords filter; it refuses one). It CANNOT target specific companies: it does not accept company_domains,
+    This pulls a market described by filters — industry, country, size_min/size_max, and for
+    decision_makers also seniorities, departments, titles, exclude_titles. keywords are passed
+    through but the data account's plan may not include keyword search (the provider then
+    rejects the whole request, nothing is charged, and this says so); there is no
+    exclude-keywords filter at all (it refuses one). It CANNOT target specific companies: it does not accept company_domains,
     company names, websites or LinkedIn URLs and will refuse — before any spend — if you pass
     them. To get the decision-makers AT a specific list of companies use qwintiq_company_people
     (or a partner-signal routine's confirm step), then qwintiq_enrich for their emails.
