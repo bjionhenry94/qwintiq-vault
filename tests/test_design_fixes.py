@@ -120,6 +120,14 @@ out = tools.qwintiq_list_count(what_you_sell="x", industry="underwater basket we
 check("unknown industry refuses", "REFUSED" in out and "nothing was pulled or charged" in out, out[:120])
 check("...and made only the catalog lookup, no search", all(t == "industry_search" for t, _ in CALLS), str(CALLS))
 CALLS.clear()
+out = tools.qwintiq_list_count(what_you_sell="x", industry="soft", country="United States")
+check("FUZZY industry hit refuses too (live: 'basket weaving' -> 'basketball'), listing options",
+      "REFUSED" in out and "software development" in out, out[:160])
+check("...no paid search fired on the fuzzy hit", all(t == "industry_search" for t, _ in CALLS), str(CALLS))
+CALLS.clear()
+out = tools.qwintiq_list_count(what_you_sell="x", industry="software, software development", country="United States")
+check("comma-separated exact industries resolve", json.loads(out)["resolved"]["industry"] == "software,software development", out[:160])
+CALLS.clear()
 out = tools.qwintiq_list_count(what_you_sell="x", industry="software", country="United")
 check("ambiguous location refuses and names the catalog options",
       "REFUSED" in out and "United States" in out and "United Kingdom" in out, out[:160])

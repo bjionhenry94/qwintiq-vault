@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime, timezone
 
 # AI-ARK's hosted MCP. Same key, JSON-RPC over HTTP with the token on the query string.
 MCP_BASE = "https://api.ai-ark.com/v1/mcp"
@@ -149,35 +150,41 @@ def _mcp_payload(r) -> dict:
 # ---------- Filter-label resolution (strict catalogs) ----------
 
 def _resolve_industry(text: str) -> str:
-    """Resolve a plain industry word to AI-ARK's exact catalog label(s). An exact (case-insensitive)
-    match wins and stays tight; otherwise return the matched labels (CSV) so an intent like
-    'recruitment' still covers its real labels. Empty in -> empty out (no industry filter)."""
+    """Resolve an industry to AI-ARK's exact catalog label(s). Comma-separated inputs are resolved
+    one by one. ONLY an exact (case-insensitive) catalog name passes. A fuzzy hit is refused with
+    the catalog options, never silently substituted — live, 'underwater basket weaving' fuzzy-
+    matched to 'basketball' and the count ran on sports teams; an export would have charged for
+    them. Empty in -> empty out (no industry filter)."""
     text = (text or "").strip()
     if not text:
         return ""
-    payload = _mcp_call("industry_search", {"query": text}, strict=True)
-    opts = [o for o in (payload.get("industries") or []) if isinstance(o, str)]
-    for o in opts:
-        if o.lower() == text.lower():
-            return o
-    if opts:
-        return ",".join(opts[:12])
-    raise UnresolvedFilter("industry", text, [])
+    resolved: list[str] = []
+    for part in [t.strip() for t in text.split(",") if t.strip()]:
+        payload = _mcp_call("industry_search", {"query": part}, strict=True)
+        opts = [o for o in (payload.get("industries") or []) if isinstance(o, str)]
+        exact = next((o for o in opts if o.lower() == part.lower()), None)
+        if exact is None:
+            raise UnresolvedFilter("industry", part, opts[:12])
+        resolved.append(exact)
+    return ",".join(resolved)
 
 
 def _resolve_location(text: str) -> str:
-    """Resolve a location to an exact catalog leaf name. location_search does substring matching,
-    so we take the exact (case-insensitive) match if present, else pass the input through (a valid
-    leaf name still resolves). Empty in -> empty out."""
+    """Resolve a location to an exact catalog leaf name (comma-separated inputs one by one).
+    Exact match only — anything else is refused with the catalog's closest names so the exact one
+    can be chosen and retried. Empty in -> empty out."""
     text = (text or "").strip()
     if not text:
         return ""
-    payload = _mcp_call("location_search", {"query": text}, strict=True)
-    opts = [o for o in (payload.get("locations") or []) if isinstance(o, str)]
-    for o in opts:
-        if o.lower() == text.lower():
-            return o
-    raise UnresolvedFilter("location", text, opts[:12])
+    resolved: list[str] = []
+    for part in [t.strip() for t in text.split(",") if t.strip()]:
+        payload = _mcp_call("location_search", {"query": part}, strict=True)
+        opts = [o for o in (payload.get("locations") or []) if isinstance(o, str)]
+        exact = next((o for o in opts if o.lower() == part.lower()), None)
+        if exact is None:
+            raise UnresolvedFilter("location", part, opts[:12])
+        resolved.append(exact)
+    return ",".join(resolved)
 
 
 def _resolve(f: dict) -> tuple[str, str]:
@@ -554,6 +561,7 @@ _POLL_BUDGET_S = 20.0     # base; the real budget scales with how many jobs are 
 _POLL_EVERY_S = 2.5
 _POLL_SIZE = 3            # ask for a few results per job, not 1 — the person's email may not be row 0
 _MAX_CONCURRENCY = 5     # AI-ARK rate limit is ~5/s; never fire more calls than that at once
+_PENDING_STALE_S = 300   # a job still 'pending' after this long is reported as not found, not "running"
 
 
 def _poll_budget_s(pending: int) -> float:
@@ -604,6 +612,8 @@ async def enrich_async(people: list[dict], want_phone: bool = True) -> list[dict
     n = len(people)
     emails, phones = [""] * n, [""] * n
     source, errs = ["skipped"] * n, [""] * n
+    phone_fired = [False] * n
+    stale: set[int] = set()  # resumed jobs that have sat 'pending' too long to still be running
     idents = [_ident(p) for p in people]
     cache = dal.enrich_cache_get(idents)
     pending: list[tuple[int, str]] = []
@@ -615,6 +625,12 @@ async def enrich_async(people: list[dict], want_phone: bool = True) -> list[dict
         elif row and row["state"] == "pending" and row["track_id"]:
             pending.append((i, row["track_id"]))
             source[i] = "resumed"
+            try:
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(row["updated_at"])).total_seconds()
+            except Exception:
+                age = 0
+            if age > _PENDING_STALE_S:
+                stale.add(i)
         elif _has_id(p):
             to_fire.append(i)
 
@@ -669,10 +685,16 @@ async def enrich_async(people: list[dict], want_phone: bool = True) -> list[dict
                 *[call("mobile_phone_finder", {"requestBody": json.dumps(_phone_body(people[i]))})
                   for i in pidx])
             for i, res in zip(pidx, phres):
+                phone_fired[i] = True  # a paid attempt, hit or miss
                 phones[i] = _extract_phone(res)
 
     # 4. Remember what we learned so the same person is never billed twice.
     still_pending = {i for i, _ in pending}
+    # A resumed job that is STILL not done after the stale window is a miss, not "still running":
+    # the provider never marks some thin-coverage profiles DONE. Say "not found" and stop waiting.
+    for i in list(still_pending):
+        if i in stale:
+            still_pending.discard(i)
     for i in range(n):
         if source[i] in ("lookup", "resumed") and not errs[i] and i not in still_pending:
             dal.enrich_cache_put(idents[i], "done" if emails[i] else "miss", email=emails[i], phone=phones[i])
@@ -680,5 +702,5 @@ async def enrich_async(people: list[dict], want_phone: bool = True) -> list[dict
             dal.enrich_cache_put(idents[i], "done" if emails[i] else "miss", email=emails[i], phone=phones[i])
     return [{**p, "email": emails[i], "phone": phones[i],
              "enriched": bool(emails[i] or phones[i]), "mock": False, "source": source[i],
-             "pending": i in still_pending, "ark_error": errs[i]}
+             "pending": i in still_pending, "phone_lookup": phone_fired[i], "ark_error": errs[i]}
             for i, p in enumerate(people)]

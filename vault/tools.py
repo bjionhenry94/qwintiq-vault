@@ -707,7 +707,9 @@ async def qwintiq_enrich(people: list[dict], confirmation_phrase: str, include_p
     found_phone = sum(1 for r in rows if (r.get("phone") or "").strip())
     from_cache = sum(1 for r in rows if r.get("source") == "cache")
     still_pending = sum(1 for r in rows if r.get("pending"))
-    charged = len(attempted) - sum(1 for r in attempted if r.get("ark_error"))
+    # Every paid attempt counts: an email lookup fired now (hit or miss) plus every mobile lookup.
+    charged = (len(attempted) - sum(1 for r in attempted if r.get("ark_error"))
+               + sum(1 for r in rows if r.get("phone_lookup")))
     mock = bool(rows and rows[0].get("mock"))
     out_rows = rows
     dropped = 0
@@ -720,6 +722,7 @@ async def qwintiq_enrich(people: list[dict], confirmation_phrase: str, include_p
     receipt = (f"Found emails for {found_email} of {n} people"
                + (f" and mobiles for {found_phone}" if include_phone else "")
                + f". Charged about {charged} credit{'s' if charged != 1 else ''}"
+               + (f" (including {sum(1 for r in rows if r.get('phone_lookup'))} mobile lookups)" if include_phone and any(r.get("phone_lookup") for r in rows) else "")
                + (f"; {from_cache} already known from earlier lookups (free)" if from_cache else "")
                + ".")
     if still_pending:
