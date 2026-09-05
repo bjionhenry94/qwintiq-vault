@@ -27,6 +27,10 @@ from datetime import datetime, timezone
 MCP_BASE = "https://api.ai-ark.com/v1/mcp"
 
 _log = logging.getLogger("qwintiq.vault")
+# httpx logs every request URL at INFO — and AI-ARK's key travels on the query string, so the
+# default logger was writing the data key into the host's log stream on every call. Silence it.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 class DataUnavailable(Exception):
@@ -240,7 +244,11 @@ def _search(tool: str, args: dict) -> dict:
     payload = _mcp_call(tool, args, strict=True)
     if not isinstance(payload, dict) or "totalElements" not in payload:
         keys = list(payload)[:10] if isinstance(payload, dict) else type(payload).__name__
-        _log.warning("ai-ark %s returned no totalElements; keys=%s", tool, keys)
+        err = payload.get("error") or payload.get("message") or payload.get("text") if isinstance(payload, dict) else ""
+        # Server-side only: the provider's own words (never shown to a consultant) so an argument
+        # the provider rejects can be diagnosed from the host log instead of guessed at.
+        _log.warning("ai-ark %s returned no totalElements; keys=%s; error=%s; args=%s",
+                     tool, keys, str(err)[:300], sorted(args))
         raise DataUnavailable
     return payload
 
