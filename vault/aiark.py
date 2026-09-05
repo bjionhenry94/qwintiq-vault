@@ -34,16 +34,50 @@ class DataUnavailable(Exception):
     consultant through an error. The real cause is logged server-side for the admin only."""
 
 
+class DataKeyMissing(Exception):
+    """No AI-Ark key is saved in the Control Panel. Raised BEFORE any provider call so the tool
+    refuses loudly instead of running in demo mode or on a host-env key (production never falls
+    back to env keys — see dal.get_secret)."""
+
+
+class UnresolvedFilter(Exception):
+    """A brief's industry/location is not a name AI-Ark's catalog recognises. Raised BEFORE any
+    paid search, because an unknown enum passed through would be ignored upstream and pull (and
+    charge for) an unfiltered worldwide market — the silent-wrong-then-charge bug class."""
+
+    def __init__(self, kind: str, text: str, options: list[str]):
+        self.kind, self.text, self.options = kind, text, options
+        hint = (f" Closest catalog names: {', '.join(options)}. Ask the user to pick one and retry "
+                f"with that exact name." if options else
+                f" Ask the user for a different {kind} wording (a plain word like 'software' or "
+                f"'health care'; a country or state name for location).")
+        super().__init__(f"REFUSED (nothing was pulled or charged): '{text}' is not a {kind} the data "
+                         f"provider recognises, so searching on it would pull the wrong market.{hint}")
+
+
 def _key() -> str | None:
-    """The AI-ARK key: admin-set (in /admin/settings, encrypted in the DB) takes precedence over
-    the host env var."""
+    """The AI-ARK key: admin-set (in /admin/settings, encrypted in the DB). In dev only, the host
+    env var is an accepted fallback; in production it never is."""
     from db import dal
 
     return dal.get_secret("AI_ARK_API_KEY")
 
 
+def _require_key() -> str:
+    k = _key()
+    if not k:
+        raise DataKeyMissing
+    return k
+
+
 def _mock() -> bool:
-    return os.environ.get("VAULT_AIARK", "").lower() == "mock" or not _key()
+    """Deterministic mock data ONLY when explicitly asked (VAULT_AIARK=mock) or in dev with no key.
+    In production a missing key REFUSES (DataKeyMissing) — never placeholder data, never demo mode."""
+    if os.environ.get("VAULT_AIARK", "").lower() == "mock":
+        return True
+    from db import dal
+
+    return (not _key()) and dal.dev_fallbacks_allowed()
 
 
 def _mock_total(seed: str, lo: int, hi: int) -> int:
@@ -63,10 +97,11 @@ def _mcp_call(tool: str, arguments: dict, strict: bool = False) -> dict:
     """
     import httpx
 
+    token = _require_key()  # refuse before any call; not swallowed below
     try:
         r = httpx.post(
             MCP_BASE,
-            params={"token": _key() or ""},
+            params={"token": token},
             json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                   "params": {"name": tool, "arguments": arguments}},
             headers={"content-type": "application/json",
@@ -127,7 +162,7 @@ def _resolve_industry(text: str) -> str:
             return o
     if opts:
         return ",".join(opts[:12])
-    return text.lower()
+    raise UnresolvedFilter("industry", text, [])
 
 
 def _resolve_location(text: str) -> str:
@@ -138,10 +173,11 @@ def _resolve_location(text: str) -> str:
     if not text:
         return ""
     payload = _mcp_call("location_search", {"query": text}, strict=True)
-    for o in (payload.get("locations") or []):
-        if isinstance(o, str) and o.lower() == text.lower():
+    opts = [o for o in (payload.get("locations") or []) if isinstance(o, str)]
+    for o in opts:
+        if o.lower() == text.lower():
             return o
-    return text
+    raise UnresolvedFilter("location", text, opts[:12])
 
 
 def _resolve(f: dict) -> tuple[str, str]:
@@ -182,6 +218,12 @@ def _people_args(f: dict, ind: str, loc: str) -> dict:
         a["title"] = ",".join(f["titles"])
     if f.get("exclude_titles"):
         a["excludeTitle"] = ",".join(f["exclude_titles"])
+    if f.get("keywords"):
+        # A brief's keywords describe the COMPANY ("fintech", "payroll"), so for a people search they
+        # go on the company-keyword dial. They used to be dropped here silently (a keyworded
+        # decision-maker export pulled the whole industry and charged for it).
+        a["companyKeyword"] = ",".join(f["keywords"])
+        a["companyKeywordMode"] = "SMART"
     return a
 
 
@@ -313,6 +355,12 @@ def pull_decision_makers(company: dict, role_sets: list[dict], cap: int) -> list
     cap = int(cap)
     if cap <= 0:
         return []
+    # A role set with no seniority/department/title would match EVERYONE at the company (interns
+    # included) and charge for them — drop such sets; with none left, pull nothing.
+    role_sets = [rs for rs in (role_sets or [])
+                 if isinstance(rs, dict) and (rs.get("seniorities") or rs.get("departments") or rs.get("titles"))]
+    if not role_sets:
+        return []
     domain = _domain_of(company.get("website") or company.get("domain") or "")
     cname = company.get("name") or company.get("company_name") or ""
     if _mock():
@@ -323,7 +371,7 @@ def pull_decision_makers(company: dict, role_sets: list[dict], cap: int) -> list
                  "country": "", "linkedin": ""} for i in range(min(cap, 3))]
     rows: list[dict] = []
     seen: set = set()
-    for rs in (role_sets or [{}]):
+    for rs in role_sets:
         if len(rows) >= cap:
             break
         args: dict = {"page": 0, "size": min(100, cap - len(rows))}
@@ -475,19 +523,22 @@ def _ark_error(payload: dict) -> str:
     return ""
 
 
-async def _amcp(client, tool: str, arguments: dict) -> dict:
-    """Async call to one AI-ARK MCP tool. Returns the parsed payload, or {} on any failure
-    (logged, never raised). Async so the vault's event loop is never blocked while we wait."""
+async def _amcp(client, tool: str, arguments: dict, key: str) -> dict:
+    """Async call to one AI-ARK MCP tool. Returns the parsed payload, or a {"error": ...} envelope
+    on an HTTP error status (so out-of-credits / auth refusals are visible to _ark_error), or {}
+    on a transport failure (logged, never raised). Async so the event loop is never blocked."""
     try:
         r = await client.post(
             MCP_BASE,
-            params={"token": _key() or ""},
+            params={"token": key},
             json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                   "params": {"name": tool, "arguments": arguments}},
             headers={"content-type": "application/json",
                      "accept": "application/json, text/event-stream"},
         )
-        r.raise_for_status()
+        if r.status_code >= 400:
+            _log.warning("ai-ark %s -> HTTP %s: %s", tool, r.status_code, r.text[:200])
+            return {"error": f"HTTP {r.status_code}: {r.text[:200]}"}
         return _mcp_payload(r)
     except Exception as e:
         _log.warning("ai-ark async call failed (%s): %s", tool, e)
@@ -513,10 +564,26 @@ def _poll_budget_s(pending: int) -> float:
     return min(180.0, 25.0 + 5.0 * pending)
 
 
+def _ident(p: dict) -> str:
+    """Stable identity for the enrichment cache: the LinkedIn URL, else name@company."""
+    linkedin, name, domain, company = _person_id(p)
+    if linkedin:
+        return "li:" + linkedin.lower().rstrip("/")
+    if name and (domain or company):
+        return "nm:" + name.lower() + "@" + (domain or company).lower()
+    return ""
+
+
 async def enrich_async(people: list[dict], want_phone: bool = True) -> list[dict]:
     """Add 'email' (and 'phone' when want_phone) to each person. Input rows are identified by a
     LinkedIn URL, or a name plus company domain/name. Returns a NEW list; originals untouched.
-    Rows we can't resolve come back with empty email/phone and enriched=False — never an error."""
+
+    Each row also carries: 'source' — 'cache' (known from an earlier lookup, NOT charged),
+    'lookup' (a paid lookup fired now), 'resumed' (a still-running earlier job collected for
+    free), or 'skipped' (no usable identity); 'pending' True when the provider's job is still
+    running at return time (call again in a minute — it is collected free, not re-charged); and
+    'ark_error' when the provider refused that person's lookup (out of credits, auth). Rows we
+    can't resolve come back with empty email/phone and enriched=False — never an exception."""
     people = people or []
     if _mock():
         out = []
@@ -525,41 +592,59 @@ async def enrich_async(people: list[dict], want_phone: bool = True) -> list[dict
             handle = (name or f"person{i + 1}").lower().replace(" ", ".")
             out.append({**p, "email": f"{handle}@{domain or 'example.com'}",
                         "phone": (f"+1415555{1000 + i:04d}" if want_phone else ""),
-                        "enriched": True, "mock": True})
+                        "enriched": True, "mock": True, "source": "lookup", "pending": False,
+                        "ark_error": ""})
         return out
 
+    from db import dal
+
+    key = _require_key()  # refuse before spend
     import httpx
 
-    emails = [""] * len(people)
-    phones = [""] * len(people)
+    n = len(people)
+    emails, phones = [""] * n, [""] * n
+    source, errs = ["skipped"] * n, [""] * n
+    idents = [_ident(p) for p in people]
+    cache = dal.enrich_cache_get(idents)
+    pending: list[tuple[int, str]] = []
+    to_fire: list[int] = []
+    for i, p in enumerate(people):
+        row = cache.get(idents[i])
+        if row and row["state"] in ("done", "miss"):
+            emails[i], phones[i], source[i] = row["email"], row["phone"], "cache"
+        elif row and row["state"] == "pending" and row["track_id"]:
+            pending.append((i, row["track_id"]))
+            source[i] = "resumed"
+        elif _has_id(p):
+            to_fire.append(i)
+
     async with httpx.AsyncClient(timeout=30) as client:
         sem = asyncio.Semaphore(_MAX_CONCURRENCY)  # respect AI-ARK's ~5/s rate limit on every call
 
         async def call(tool, args):
             async with sem:
-                return await _amcp(client, tool, args)
+                return await _amcp(client, tool, args, key)
 
-        # 1. Fire an email_finder job for everyone we can identify (throttled to the rate limit).
-        eidx = [i for i, p in enumerate(people) if _has_id(p)]
-        started = await asyncio.gather(*[call("email_finder", _email_args(people[i])) for i in eidx])
-        # If AI-ARK refused (e.g. out of credits) and nothing came back, surface that loudly rather
-        # than silently returning "0 found" and misreporting a spend that never happened.
-        ark_err = next((e for e in (_ark_error(s) for s in started) if e), "")
-        if ark_err and not any(_extract_email(s) for s in started):
-            return [{**p, "email": "", "phone": "", "enriched": False, "ark_error": ark_err}
-                    for p in people]
-        pending: list[tuple[int, str]] = []
-        for i, s in zip(eidx, started):
-            em = _extract_email(s)
+        # 1. Fire an email_finder job for everyone not already known (throttled). Any provider
+        #    refusal is recorded PER PERSON, so a balance that runs out mid-batch shows as
+        #    "couldn't be checked" for the people after it — never as "not found".
+        started = await asyncio.gather(*[call("email_finder", _email_args(people[i])) for i in to_fire])
+        for i, s_ in zip(to_fire, started):
+            source[i] = "lookup"
+            err = _ark_error(s_)
+            if err:
+                errs[i] = err
+                continue
+            em = _extract_email(s_)
             if em:
                 emails[i] = em
-            else:
-                track = s.get("trackId") or s.get("trackID") or s.get("track_id")
-                if track:
-                    pending.append((i, track))
-        # 2. Poll the pending jobs together on a budget that scales with how many are still open,
-        #    so a bigger batch actually gets time to finish instead of being abandoned at a fixed
-        #    20s (the live "same person hits at N=3, misses at N=6" flakiness).
+                continue
+            track = s_.get("trackId") or s_.get("trackID") or s_.get("track_id")
+            if track:
+                pending.append((i, str(track)))
+                dal.enrich_cache_put(idents[i], "pending", track_id=str(track))
+        # 2. Poll the pending jobs together on a budget that scales with how many are still open.
+        #    The loop exits the moment every job is done; the ceiling only guards against a hang.
         deadline = time.monotonic() + _poll_budget_s(len(pending))
         while pending and time.monotonic() < deadline:
             await asyncio.sleep(_POLL_EVERY_S)
@@ -567,21 +652,33 @@ async def enrich_async(people: list[dict], want_phone: bool = True) -> list[dict
                 *[call("email_finder_results", {"trackId": t, "size": _POLL_SIZE}) for _, t in pending])
             still: list[tuple[int, str]] = []
             for (i, t), res in zip(pending, polled):
+                err = _ark_error(res)
+                if err:
+                    errs[i] = err
+                    continue
                 em = _extract_email(res)
                 if em:
                     emails[i] = em
                 elif str(res.get("state", "")).upper() != "DONE":
                     still.append((i, t))  # keep waiting; DONE-with-no-email drops out
             pending = still
-        # 3. Phones — best-effort, throttled, no polling.
+        # 3. Phones — best-effort, throttled, no polling; only for people not already holding one.
         if want_phone:
-            pidx = [i for i, p in enumerate(people) if _phone_body(p)]
+            pidx = [i for i, p in enumerate(people) if not phones[i] and _phone_body(p) and not errs[i]]
             phres = await asyncio.gather(
                 *[call("mobile_phone_finder", {"requestBody": json.dumps(_phone_body(people[i]))})
                   for i in pidx])
             for i, res in zip(pidx, phres):
                 phones[i] = _extract_phone(res)
 
+    # 4. Remember what we learned so the same person is never billed twice.
+    still_pending = {i for i, _ in pending}
+    for i in range(n):
+        if source[i] in ("lookup", "resumed") and not errs[i] and i not in still_pending:
+            dal.enrich_cache_put(idents[i], "done" if emails[i] else "miss", email=emails[i], phone=phones[i])
+        elif source[i] == "cache" and want_phone and phones[i] and not cache[idents[i]].get("phone"):
+            dal.enrich_cache_put(idents[i], "done" if emails[i] else "miss", email=emails[i], phone=phones[i])
     return [{**p, "email": emails[i], "phone": phones[i],
-             "enriched": bool(emails[i] or phones[i]), "mock": False}
+             "enriched": bool(emails[i] or phones[i]), "mock": False, "source": source[i],
+             "pending": i in still_pending, "ark_error": errs[i]}
             for i, p in enumerate(people)]

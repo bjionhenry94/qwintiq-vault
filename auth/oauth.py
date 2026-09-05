@@ -84,7 +84,7 @@ _LOGIN_PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <main class="card">
   <img class="logo" src="/static/logo.png" alt="QwintiQ Consulting">
   <h1>Sign in</h1>
-  <p class="sub">Use the email and password QwintiQ gave you.</p>
+  <p class="sub"><b>{client}</b> is asking to connect to QwintiQ. Use the email and password QwintiQ gave you.</p>
   {error}
   <form method="post" action="/authorize">
     {hidden}
@@ -165,9 +165,27 @@ def _hidden(params: dict, extra: tuple = ()) -> str:
     )
 
 
+def _client_name(params: dict) -> str:
+    """The registered client's name, shown on the sign-in page so a consultant can see WHO is
+    asking for their QwintiQ session (a phished link from an unknown client stands out)."""
+    client = dal.get_client(params.get("client_id", "") or "")
+    return (client or {}).get("name") or "An unregistered app"
+
+
 def _login_html(params: dict, error: str = "") -> str:
     err = f'<div class="error">{html.escape(error)}</div>' if error else ""
-    return _LOGIN_PAGE.format(css=CSS, hidden=_hidden(params), error=err)
+    return _LOGIN_PAGE.format(css=CSS, hidden=_hidden(params), error=err,
+                              client=html.escape(_client_name(params)))
+
+
+def _pkce_problem(params: dict) -> str:
+    """PKCE (S256) is REQUIRED, not optional: it is what binds the code to the client that started
+    the flow. Without it an intercepted code could be exchanged by anyone. Empty '' if fine."""
+    if not params.get("code_challenge"):
+        return "This sign-in link is missing its security check (PKCE). Re-add the QwintiQ connector and try again."
+    if (params.get("code_challenge_method") or "S256").upper() != "S256":
+        return "This sign-in link uses an unsupported security method. Re-add the QwintiQ connector and try again."
+    return ""
 
 
 def _setpw_html(params: dict, error: str = "") -> str:
@@ -188,7 +206,11 @@ def _issue_code(request: Request, params: dict, redirect_uri: str, consultant_id
 
 async def authorize(request: Request):
     if request.method == "GET":
-        return HTMLResponse(_login_html(dict(request.query_params)))
+        params = dict(request.query_params)
+        bad = _pkce_problem(params)
+        if bad:
+            return HTMLResponse(_login_html(params, bad), status_code=400)
+        return HTMLResponse(_login_html(params))
     form = await request.form()
     params = {k: str(form.get(k, "")) for k in form}
     client = dal.get_client(params.get("client_id", ""))
@@ -196,6 +218,9 @@ async def authorize(request: Request):
     if not client or redirect_uri not in client["redirect_uris"]:
         return HTMLResponse(_login_html(params, "This sign-in link is not valid. "
                                         "Re-add the QwintiQ connector and try again."), status_code=400)
+    bad = _pkce_problem(params)
+    if bad:
+        return HTMLResponse(_login_html(params, bad), status_code=400)
 
     email = params.get("email", "").lower().strip()
     ip = ratelimit.client_ip(request)
@@ -236,10 +261,20 @@ async def token(request: Request):
     row = dal.take_code(str(form.get("code", "")))
     if not row:
         return JSONResponse({"error": "invalid_grant"}, status_code=400)
+    # The code is bound to the client (and redirect) that started the flow. A public client
+    # identifies itself in the token request; if it does, it must be the same one.
+    client_id = str(form.get("client_id", "") or "")
+    if client_id and client_id != row["client_id"]:
+        return JSONResponse({"error": "invalid_grant", "error_description": "client mismatch"},
+                            status_code=400)
+    redirect_uri = str(form.get("redirect_uri", "") or "")
+    if redirect_uri and redirect_uri != row["redirect_uri"]:
+        return JSONResponse({"error": "invalid_grant", "error_description": "redirect mismatch"},
+                            status_code=400)
     verifier = str(form.get("code_verifier", ""))
     expected = base64.urlsafe_b64encode(
         hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-    if row["code_challenge"] and expected != row["code_challenge"]:
+    if not row["code_challenge"] or expected != row["code_challenge"]:  # PKCE is mandatory
         return JSONResponse({"error": "invalid_grant", "error_description": "PKCE failed"},
                             status_code=400)
     key = dal.active_key(row["consultant_id"])

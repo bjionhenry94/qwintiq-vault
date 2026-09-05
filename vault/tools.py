@@ -22,7 +22,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from auth.context import current_consultant
 from db import dal
 from vault import aiark, lemlist
-from vault.aiark import DataUnavailable
+from vault.aiark import DataKeyMissing, DataUnavailable, UnresolvedFilter
 from vault.engine import REFUSAL, meta_guard, run_framework
 
 _log = logging.getLogger("qwintiq.vault")
@@ -36,6 +36,9 @@ _SAFE_ERROR = ("Something didn't go through on the QwintiQ side just now. Please
                "moment — if it keeps happening, let your QwintiQ admin know. Nothing to fix on your end.")
 _DATA_ERROR = ("The data lookup is temporarily unavailable. Please try again shortly — if it "
                "persists, your QwintiQ admin needs to check the vault's data connection.")
+_NOKEY_ERROR = ("NOT CONNECTED (nothing was charged): no AI-Ark data key is saved in the QwintiQ "
+                "Control Panel → Settings. Ask your QwintiQ admin to add it, then try again. The vault "
+                "never runs data work on any other key.")
 
 
 def _safe(fn):
@@ -43,6 +46,11 @@ def _safe(fn):
     def wrapper(*args, **kwargs):
         try:
             return fn(*args, **kwargs)
+        except UnresolvedFilter as e:
+            return str(e)  # a before-spend refusal, worded for the consultant
+        except DataKeyMissing:
+            _log.warning("no AI-Ark key saved; %s refused before any call", fn.__name__)
+            return _NOKEY_ERROR
         except DataUnavailable:
             _log.warning("data lookup failed in %s", fn.__name__)
             return _DATA_ERROR
@@ -60,6 +68,11 @@ def _safe_async(fn):
     async def wrapper(*args, **kwargs):
         try:
             return await fn(*args, **kwargs)
+        except UnresolvedFilter as e:
+            return str(e)
+        except DataKeyMissing:
+            _log.warning("no AI-Ark key saved; %s refused before any call", fn.__name__)
+            return _NOKEY_ERROR
         except DataUnavailable:
             _log.warning("data lookup failed in %s", fn.__name__)
             return _DATA_ERROR
@@ -84,7 +97,12 @@ if _allowed:
 else:
     _security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 
-mcp = FastMCP("qwintiq-vault", transport_security=_security)
+# stateless_http: every request is served by a fresh MCP server inside that request's own task,
+# so the consultant identity the AuthGate sets for THIS request is what the tool sees. (Stateful
+# mode ran tools in a per-session task whose identity was snapshotted when the session was first
+# opened, not per call.) It also removes the in-memory session state that pinned the vault to a
+# single process.
+mcp = FastMCP("qwintiq-vault", transport_security=_security, stateless_http=True)
 
 _CONFIRM_RE = re.compile(r"i\s+confirm\s+to\s+export\s+this\s+and\s+use\s+([\d,]+)\s+amount\s+of\s+credits",
                          re.IGNORECASE)
@@ -170,9 +188,11 @@ def qwintiq_list_count(what_you_sell: str, industry: str, country: str,
         if meta_guard(txt or ""):
             dal.log_extraction(_cid(), "qwintiq_list_count", "meta_guard", txt)
             return REFUSAL
+    if exclude_keywords:
+        return _NO_EXCLUDE_KEYWORDS
     filters = {"industry": industry, "country": country, "size_min": size_min,
                "size_max": size_max, "keywords": keywords or [],
-               "exclude_keywords": exclude_keywords or [], "seniorities": seniorities or [],
+               "seniorities": seniorities or [],
                "departments": departments or [], "titles": titles or [],
                "exclude_titles": exclude_titles or []}
     companies = aiark.count_companies(filters)
@@ -198,8 +218,15 @@ def qwintiq_list_count(what_you_sell: str, industry: str, country: str,
 # else used to be dropped silently — so a curated shortlist passed as `company_domains` pulled a
 # generic worldwide market instead and charged 50 credits for unusable rows (the live bug). Now any
 # key outside this set refuses BEFORE the credit gate and BEFORE any AI-Ark call.
-_EXPORT_FILTER_KEYS = {"industry", "country", "size_min", "size_max", "keywords", "exclude_keywords",
+_EXPORT_FILTER_KEYS = {"industry", "country", "size_min", "size_max", "keywords",
                        "seniorities", "departments", "titles", "exclude_titles"}
+# AI-Ark's search has NO exclude-keyword dial (only exclude-title / -industry / -location). This key
+# used to be accepted and silently dropped, so "SaaS founders, excluding agencies" pulled the whole
+# market and charged for it. Now it refuses before the gate.
+_NO_EXCLUDE_KEYWORDS = ("REFUSED (nothing was pulled or charged): the data provider has no "
+                        "'exclude keywords' filter, so exclude_keywords can't be honoured and the "
+                        "result would be wrong. Narrow the brief instead — exclude_titles, a tighter "
+                        "industry, or positive keywords — and tell the user plainly.")
 # Keys that mean "these specific companies/people" — the one thing a market export can never do.
 _TARGETING_KEYS = {"company_domains", "domains", "websites", "companies", "company_names",
                    "company_name", "company_domain", "company", "linkedin", "linkedin_urls",
@@ -210,6 +237,9 @@ def _refuse_unsupported_filters(filters: dict, kind: str) -> str:
     """Return a refusal string if `filters` asks for something the market export can't honour,
     else ''. Refusing here is what stops a mis-targeted request from spending anything."""
     keys = set((filters or {}).keys())
+    if (filters or {}).get("exclude_keywords"):
+        return _NO_EXCLUDE_KEYWORDS
+    keys.discard("exclude_keywords")  # an empty list is harmless
     targeting = sorted(keys & _TARGETING_KEYS)
     unknown = sorted(keys - _EXPORT_FILTER_KEYS - _TARGETING_KEYS)
     if not targeting and not unknown:
@@ -236,8 +266,8 @@ def qwintiq_list_export(kind: str, filters: dict, max_rows: int, confirmation_ph
     """Export a MARKET by brief (kind: 'companies' or 'decision_makers') as CSV text.
 
     This pulls a market described by filters — industry, country, size_min/size_max, keywords,
-    exclude_keywords, and for decision_makers also seniorities, departments, titles,
-    exclude_titles. It CANNOT target specific companies: it does not accept company_domains,
+    and for decision_makers also seniorities, departments, titles, exclude_titles (there is no
+    exclude-keywords filter; it refuses one). It CANNOT target specific companies: it does not accept company_domains,
     company names, websites or LinkedIn URLs and will refuse — before any spend — if you pass
     them. To get the decision-makers AT a specific list of companies use qwintiq_company_people
     (or a partner-signal routine's confirm step), then qwintiq_enrich for their emails.
@@ -261,9 +291,15 @@ def qwintiq_list_export(kind: str, filters: dict, max_rows: int, confirmation_ph
     rows = aiark.export_rows(filters, "companies" if kind == "companies" else "people", max_rows)
     seen, deduped = set(), []
     for r in rows:
-        key = (r.get("website"), r.get("full_name"))
-        if key not in seen:
-            seen.add(key)
+        # Dedupe on a real identity only. Rows with nothing to key on used to all collapse into the
+        # first one (charged, then silently missing from the CSV) — now they are kept.
+        if kind == "companies":
+            key = r.get("website") or r.get("linkedin") or r.get("company_name") or None
+        else:
+            key = r.get("linkedin") or ((r.get("website"), r.get("full_name")) if r.get("full_name") else None)
+        if key is None or key not in seen:
+            if key is not None:
+                seen.add(key)
             deduped.append(r)
     cols = (["company_name", "website", "country", "employee_count", "industry", "linkedin"]
             if kind == "companies"
@@ -311,6 +347,11 @@ def _run_partner_pull(cfg: dict, candidates: list[dict], confirmation_phrase: st
                  for g in hints.values() if isinstance(g, dict)]
     if not role_sets:
         role_sets = [{"seniorities": [], "departments": [], "titles": dm.get("target_roles", []) or []}]
+    if not any(rs["seniorities"] or rs["departments"] or rs["titles"] for rs in role_sets):
+        return json.dumps({"error": "ROUTINE PULL REFUSED (nothing charged): this routine has no "
+                           "decision-maker roles saved (no target_roles and no seniority/department/"
+                           "title dials), so a pull would return anyone at each company and charge "
+                           "for them. Add the roles to the routine with qwintiq_routine_save first."})
     candidates = candidates or []
     total_cap = int(cap_n) if cap_n else max_per * max(1, len(candidates))
     people: list[dict] = []
@@ -363,6 +404,9 @@ def _run_partner_pull(cfg: dict, candidates: list[dict], confirmation_phrase: st
     })
 
 
+_DEFAULT_DM_SENIORITIES = ["founder", "owner", "c_suite", "vp", "head", "director"]
+
+
 @mcp.tool()
 @_safe
 def qwintiq_company_people(companies: list[dict], confirmation_phrase: str,
@@ -405,6 +449,9 @@ def qwintiq_company_people(companies: list[dict], confirmation_phrase: str,
     if confirmed != n:
         return (f"COMPANY PULL REFUSED: the user confirmed {confirmed} but this pull is {n} "
                 f"({max_per} per company × {len(companies)} companies). Re-quote {n} and re-confirm.")
+    # No roles or seniorities given = decision-makers, not "anyone at the company".
+    if not roles and not seniorities:
+        seniorities = _DEFAULT_DM_SENIORITIES
     role_sets = [{"seniorities": seniorities or [], "departments": [], "titles": roles or []}]
     people: list[dict] = []
     seen: set = set()
@@ -468,8 +515,8 @@ def qwintiq_partner_signals(routine_name: str = "", candidate_companies: list[di
     To confirm (Supervised): call again with the user's typed confirmation_phrase AND that
     gate_token — you do NOT re-send candidate_companies; the vault uses the exact shortlist and
     count it already quoted, so the number can't drift and nothing runs on an empty list. Autopilot
-    routines carry their own daily credit cap and skip the daily stop, per the user's standing
-    permission.
+    routines skip the typed confirmation per the user's standing permission; the pull is bounded
+    by the routine's max_per_company × the companies passed (there are no credit caps).
     """
     cid = _cid()
     if not routine_name:
@@ -528,14 +575,11 @@ def qwintiq_partner_signals(routine_name: str = "", candidate_companies: list[di
                      "Do NOT re-send candidate_companies."),
         })
 
-    # Autopilot: standing permission, pull up to the daily cap (no typed phrase needed). Legacy
-    # one-shot (candidates + phrase together) still works, capped at the number they confirmed.
+    # Autopilot: standing permission, no typed phrase needed; bounded by max_per_company × companies
+    # (owner ruling: no credit caps anywhere). Legacy one-shot (candidates + phrase together) still
+    # works, bounded at the number they confirmed.
     if autopilot:
-        cap_n = int(cfg.get("daily_credit_cap") or 0)
-        if cap_n <= 0:
-            return json.dumps({"error": "This routine is on autopilot but has no daily credit cap "
-                               "saved, so it can't pull on its own. Set a cap first."})
-        return _run_partner_pull(cfg, candidate_companies or [], confirmation_phrase, cid, cap_n=cap_n)
+        return _run_partner_pull(cfg, candidate_companies or [], confirmation_phrase, cid, cap_n=None)
     cap_n = int(m.group(1).replace(",", "")) if m else None
     return _run_partner_pull(cfg, candidate_companies or [], confirmation_phrase, cid, cap_n=cap_n)
 
@@ -645,31 +689,45 @@ async def qwintiq_enrich(people: list[dict], confirmation_phrase: str, include_p
     # AI-ARK's rate limit and waits long enough for the whole batch to resolve, returning as soon
     # as every job is done, so small batches stay fast and larger ones just take a little longer.
     rows = await aiark.enrich_async(people or [], want_phone=include_phone)
-    ark_error = next((r.get("ark_error") for r in rows if r.get("ark_error")), "")
-    if ark_error:
+    attempted = [r for r in rows if r.get("source") == "lookup"]
+    refused = [r for r in rows if r.get("ark_error")]
+    ark_error = refused[0]["ark_error"] if refused else ""
+    found_email = sum(1 for r in rows if (r.get("email") or "").strip())
+    if attempted and len(refused) >= len(attempted) and found_email == 0:
         return json.dumps({
             "error": "ENRICH COULD NOT RUN",
             "reason": ark_error,
-            "found": 0, "total": n,
-            "receipt": ("The data provider refused the lookup — this reads as the AI-Ark balance "
-                        "being out of credits. Nothing was charged and no emails were added. Ask "
+            "found": found_email, "total": n,
+            "receipt": ("The data provider refused the lookups — this reads as the AI-Ark balance "
+                        "being out of credits. Nothing was charged and no new emails were added. Ask "
                         "your QwintiQ admin to top up the AI-Ark balance, then run this again."),
             "note": "Show the user the 'receipt' line. Do NOT retry — a top-up is needed first.",
         })
-    processed = n
     found = sum(1 for r in rows if r.get("enriched"))
-    found_email = sum(1 for r in rows if (r.get("email") or "").strip())
     found_phone = sum(1 for r in rows if (r.get("phone") or "").strip())
+    from_cache = sum(1 for r in rows if r.get("source") == "cache")
+    still_pending = sum(1 for r in rows if r.get("pending"))
+    charged = len(attempted) - sum(1 for r in attempted if r.get("ark_error"))
     mock = bool(rows and rows[0].get("mock"))
     out_rows = rows
     dropped = 0
     if only_with_email:
         out_rows = [r for r in rows if (r.get("email") or "").strip()]
         dropped = len(rows) - len(out_rows)
-    # Billing is per attempt, not per hit, so the spend tracks the number processed, not the finds.
-    receipt = (f"Found emails for {found_email} of {processed} people"
+    # Billing is per lookup ATTEMPTED, not per hit — and only for lookups fired now: people already
+    # known from an earlier run come from the vault's memory at no cost, and a job still running is
+    # collected on the next call for free, never re-fired.
+    receipt = (f"Found emails for {found_email} of {n} people"
                + (f" and mobiles for {found_phone}" if include_phone else "")
-               + f" (about {processed} credits).")
+               + f". Charged about {charged} credit{'s' if charged != 1 else ''}"
+               + (f"; {from_cache} already known from earlier lookups (free)" if from_cache else "")
+               + ".")
+    if still_pending:
+        receipt += (f" {still_pending} lookup{'s are' if still_pending != 1 else ' is'} still running at the "
+                    f"provider — run this again in a minute for those (collected free, not re-charged).")
+    if refused:
+        receipt += (f" {len(refused)} couldn't be checked — the provider refused ({ark_error[:120]}); "
+                    f"not charged, retry after the AI-Ark balance is topped up.")
     if only_with_email:
         receipt += (f" Returning only the {len(out_rows)} with an email; {dropped} dropped."
                     if dropped else " Every person had an email.")
@@ -683,7 +741,11 @@ async def qwintiq_enrich(people: list[dict], confirmation_phrase: str, include_p
         "found_email": found_email,
         "found_phone": found_phone,
         "dropped_no_email": dropped,
-        "processed": processed,
+        "charged": charged,
+        "from_cache": from_cache,
+        "still_pending": still_pending,
+        "could_not_check": len(refused),
+        "processed": n,
         "total": n,
         "receipt": receipt,
         "note": "Show the 'receipt' line, then the people. Blank email/phone = not found.",
@@ -724,14 +786,23 @@ def qwintiq_routine_list() -> str:
 @_safe
 def qwintiq_routine_save(name: str, config: dict) -> str:
     """Save/update a partner-signal routine (signals, company rule, roles, icebreaker style,
-    campaign, run mode + credit cap) in the vault under the user's account. An autopilot
-    routine MUST carry a daily_credit_cap — refused otherwise."""
+    campaign, run mode) in the vault under the user's account. A routine MUST say which
+    decision-makers to pull — decision_makers.target_roles (titles) and/or ai_ark_dials_hint
+    with seniority/department/title — refused otherwise, because a role-less pull would return
+    anyone at each company and charge for them."""
     # Canonicalise the run-mode key: clients plausibly send "mode" for "run_mode".
     mode = str(config.get("run_mode") or config.get("mode") or "").strip().lower()
     if mode:
         config = {**config, "run_mode": mode}
         config.pop("mode", None)
-    if mode == "autopilot" and not config.get("daily_credit_cap"):
-        return "REFUSED: an autopilot routine needs a daily_credit_cap. Ask the user for one."
+    dm = config.get("decision_makers") or {}
+    hints = (dm.get("ai_ark_dials_hint") or {}) if isinstance(dm, dict) else {}
+    has_roles = bool(isinstance(dm, dict) and dm.get("target_roles")) or any(
+        isinstance(g, dict) and (g.get("seniority") or g.get("department") or g.get("title"))
+        for g in (hints.values() if isinstance(hints, dict) else []))
+    if not has_roles:
+        return ("ROUTINE REFUSED: it needs the decision-maker roles to pull — set "
+                "decision_makers.target_roles (e.g. ['Head of Partnerships', 'Founder']) and/or "
+                "decision_makers.ai_ark_dials_hint with seniority/department/title. Ask the user.")
     dal.state_save(_cid(), "partner_routine", name, config)
     return f"Routine '{name}' saved to the vault."

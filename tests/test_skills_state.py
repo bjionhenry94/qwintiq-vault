@@ -55,14 +55,18 @@ def main():
     check("setup round-trips through vault", "My test setup" in names)
     check("shared QwintiQ default setup visible", any(s["shared"] for s in setups))
 
+    check("own setup is scoped to THIS consultant (identity reaches the tool per request)",
+          any(s["name"] == "My test setup" and not s["shared"] for s in setups))
+
     ap = asyncio.run(mcp_call(token, "qwintiq_routine_save", {"name": "AP test", "config": {"run_mode": "autopilot"}}))
-    check("autopilot routine without credit cap refused", "REFUSED" in ap)
+    check("routine without decision-maker roles refused", "REFUSED" in ap)
 
     ap2 = asyncio.run(mcp_call(token, "qwintiq_routine_save", {"name": "AP test 2", "config": {"mode": "autopilot"}}))
-    check("autopilot via 'mode' synonym without cap also refused", "REFUSED" in ap2)
+    check("...via 'mode' synonym too", "REFUSED" in ap2)
 
-    ap3 = asyncio.run(mcp_call(token, "qwintiq_routine_save", {"name": "AP test 3", "config": {"mode": "Autopilot", "daily_credit_cap": 20}}))
-    check("autopilot with cap saves (mode synonym, mixed case)", "saved" in ap3)
+    ap3 = asyncio.run(mcp_call(token, "qwintiq_routine_save", {"name": "AP test 3", "config": {
+        "mode": "Autopilot", "decision_makers": {"target_roles": ["Founder"], "max_per_company": 2}}}))
+    check("autopilot with roles saves, NO credit cap needed (mode synonym, mixed case)", "saved" in ap3)
 
     copy = asyncio.run(mcp_call(token, "qwintiq_copywriter", {
         "problem": "referrals slowing", "outcome": "10 partner calls a month",

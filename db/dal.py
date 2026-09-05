@@ -10,6 +10,7 @@ setups / partner routines). No other module talks SQL.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -21,6 +22,7 @@ _PG_URL = os.environ.get("DATABASE_URL", "").strip()
 _SQLITE_PATH = os.environ.get("VAULT_SQLITE", str(Path(__file__).parent / "vault.dev.sqlite3"))
 _lock = threading.Lock()
 _conn = None
+_log = logging.getLogger("qwintiq.vault")
 
 
 def is_prod() -> bool:
@@ -68,20 +70,22 @@ def q(sql: str, params: tuple = (), fetch: str | None = None):
         sql = sql.replace("?", "%s")
     with _lock:
         cur = conn.execute(sql, params)
+        out = None
         if fetch == "one":
             row = cur.fetchone()
-            return dict(row) if row is not None and not _PG_URL else (
+            out = dict(row) if row is not None and not _PG_URL else (
                 dict(zip([d[0] for d in cur.description], row)) if row is not None else None
             )
-        if fetch == "all":
+        elif fetch == "all":
             rows = cur.fetchall()
             if _PG_URL:
                 cols = [d[0] for d in cur.description]
-                return [dict(zip(cols, r)) for r in rows]
-            return [dict(r) for r in rows]
+                out = [dict(zip(cols, r)) for r in rows]
+            else:
+                out = [dict(r) for r in rows]
         if not _PG_URL:
-            conn.commit()
-        return None
+            conn.commit()  # always: a fetched write (delete … returning) must persist too
+        return out
 
 
 _TABLES = """
@@ -117,6 +121,9 @@ create table if not exists settings (
     name text primary key, value text not null, updated_at text not null);
 create table if not exists signal_gate (
     token text primary key, payload text not null, expires_at text not null);
+create table if not exists enrich_cache (
+    ident text primary key, email text not null default '', phone text not null default '',
+    state text not null, track_id text not null default '', updated_at text not null);
 """
 
 
@@ -350,10 +357,11 @@ def gate_take(token: str) -> dict | None:
     unknown or expired. Delete-on-read so one confirmation can never authorise two pulls."""
     if not token:
         return None
-    row = q("select payload, expires_at from signal_gate where token=?", (token,), fetch="one")
+    # ONE statement consumes and returns the row, so two concurrent confirms with the same token
+    # can never both read it before either deletes it (select-then-delete had that window).
+    row = q("delete from signal_gate where token=? returning payload, expires_at", (token,), fetch="one")
     if not row:
         return None
-    q("delete from signal_gate where token=?", (token,))  # consume it, pass or fail
     if row["expires_at"] <= _now():
         return None
     try:
@@ -387,18 +395,43 @@ def set_secret(name: str, plaintext: str) -> None:
         q("insert into settings (name, value, updated_at) values (?,?,?)", (name, token, _now()))
 
 
+# Keys whose saved value could not be decrypted (rotated SECRET_KEY, corrupt row). Surfaced in
+# the admin Settings page so a dead key is never mistaken for a working one.
+_DECRYPT_FAILED: set[str] = set()
+
+
+def dev_fallbacks_allowed() -> bool:
+    """Host-env API keys are a DEV convenience only. In production the ONLY keys the vault will
+    ever use are the ones the admin saved in Settings — there is no fallback to whatever happens
+    to sit in the host config (owner ruling: the vault must never quietly run on someone else's
+    keys). A missing/undecryptable saved key means the tool refuses, loudly, not a silent swap."""
+    return not (bool(_PG_URL) or is_prod())
+
+
 def get_secret(name: str) -> str | None:
-    """Admin-set key (decrypted) if present, else the host env var, else None. This is the
-    single source every key lookup goes through, so /admin overrides env with no code change.
-    Any DB hiccup (e.g. table not yet created) falls back to env rather than throwing — a key
-    lookup must never crash a skill call."""
+    """Admin-set key (decrypted) if present; in dev only, else the host env var; else None.
+    This is the single source every key lookup goes through. A DB hiccup or a decrypt failure
+    is logged and reported (secret_status) — it never crashes a skill call and never silently
+    substitutes a different key in production."""
+    global _DECRYPT_FAILED
     try:
         row = q("select value from settings where name=?", (name,), fetch="one")
-        if row:
-            return _fernet().decrypt(row["value"].encode()).decode()
     except Exception:
-        pass  # missing table / rotated SECRET_KEY / corrupt token -> fall back to env
-    return os.environ.get(name) or None
+        _log.exception("secret lookup failed for %s (DB unavailable)", name)
+        row = None
+    if row:
+        try:
+            val = _fernet().decrypt(row["value"].encode()).decode()
+            _DECRYPT_FAILED.discard(name)
+            return val
+        except Exception:
+            _DECRYPT_FAILED.add(name)
+            _log.error("saved key %s could not be decrypted (SECRET_KEY rotated or row corrupt) — "
+                       "refusing to fall back; re-enter it in Settings", name)
+            return None
+    if dev_fallbacks_allowed():
+        return os.environ.get(name) or None
+    return None
 
 
 def clear_secret(name: str) -> None:
@@ -409,12 +442,52 @@ def secret_status(name: str) -> str:
     """For the admin UI. Never returns the key itself — only where it's coming from."""
     try:
         if q("select name from settings where name=?", (name,), fetch="one"):
+            if get_secret(name) is None:  # a fresh read heals or re-flags the entry
+                return "decrypt_failed"
             return "managed_here"
     except Exception:
         pass
-    if os.environ.get(name):
+    if dev_fallbacks_allowed() and os.environ.get(name):
         return "from_env"
     return "not_set"
+
+
+# ---------- Enrichment cache (never pay twice for the same person) ----------
+# email_finder bills per person ATTEMPTED. A dropped connection + retry, or the same person showing
+# up in the next round of a signal loop, used to re-fire (and re-bill) the lookup. Results are
+# kept here keyed by the person's identity: hits for 30 days, misses for 7, and a still-running
+# job's trackId for an hour so a follow-up call can collect it for free instead of re-charging.
+_CACHE_TTL_S = {"done": 30 * 86400, "miss": 7 * 86400, "pending": 3600}
+
+
+def enrich_cache_get(idents: list[str]) -> dict[str, dict]:
+    """Unexpired cache rows for these identities: {ident: {email, phone, state, track_id}}."""
+    out: dict[str, dict] = {}
+    if not idents:
+        return out
+    now = datetime.now(timezone.utc)
+    for ident in set(i for i in idents if i):
+        row = q("select * from enrich_cache where ident=?", (ident,), fetch="one")
+        if not row:
+            continue
+        try:
+            age = (now - datetime.fromisoformat(row["updated_at"])).total_seconds()
+        except Exception:
+            continue
+        if age <= _CACHE_TTL_S.get(row["state"], 0):
+            out[ident] = row
+    return out
+
+
+def enrich_cache_put(ident: str, state: str, email: str = "", phone: str = "", track_id: str = "") -> None:
+    if not ident:
+        return
+    if q("select ident from enrich_cache where ident=?", (ident,), fetch="one"):
+        q("update enrich_cache set email=?, phone=?, state=?, track_id=?, updated_at=? where ident=?",
+          (email or "", phone or "", state, track_id or "", _now(), ident))
+    else:
+        q("insert into enrich_cache (ident, email, phone, state, track_id, updated_at) values (?,?,?,?,?,?)",
+          (ident, email or "", phone or "", state, track_id or "", _now()))
 
 
 def purge_expired(keep_log_days: int = 30) -> None:
@@ -427,3 +500,4 @@ def purge_expired(keep_log_days: int = 30) -> None:
     q("delete from access_tokens where revoked_at is not null and revoked_at <= ?", (cutoff,))
     q("delete from extraction_log where created_at <= ?", (cutoff,))
     q("delete from signal_gate where expires_at <= ?", (now,))
+    q("delete from enrich_cache where updated_at <= ?", (cutoff,))

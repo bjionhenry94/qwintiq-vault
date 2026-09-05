@@ -101,7 +101,7 @@ header a:hover{color:var(--brand)}
 .keyrow input{min-width:220px}
 .stat{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:4px 10px;border-radius:99px;white-space:nowrap}
 .stat.on{background:var(--ok-bg);color:var(--ok)}.stat.env{background:color-mix(in srgb,var(--purple) 12%,var(--card));color:var(--purple);border:1px solid color-mix(in srgb,var(--purple) 26%,var(--line))}
-.stat.off{background:var(--cream);color:var(--ink-soft)}
+.stat.off{background:var(--cream);color:var(--ink-soft)}.stat.err{background:var(--bad-bg);color:var(--bad)}
 main{max-width:820px;margin:38px auto;padding:0 20px}
 h1{font-size:26px;font-weight:700;margin-bottom:4px;letter-spacing:-.01em}
 .sub{color:var(--ink-soft);font-size:14.5px;margin-bottom:26px;line-height:1.5}
@@ -278,14 +278,15 @@ _MANAGED_KEYS = [
     ("ANTHROPIC_API_KEY", "Claude (Anthropic) key",
      "Alternative engine for the copy & icebreaker skills. Only one AI key is needed."),
     ("AI_ARK_API_KEY", "AI-Ark data key",
-     "Powers market-sizing / list-building. Leave empty to run those in safe demo mode."),
+     "Powers market-sizing, list-building, company pulls and email/phone finding. Without it those tools refuse (nothing is charged)."),
     ("LEMLIST_API_KEY", "Lemlist key",
-     "Lets the vault add finished leads straight into a Lemlist campaign. Leave empty to run in safe demo mode."),
+     "Lets the vault add finished leads straight into a Lemlist campaign. Without it uploads say 'Lemlist isn't connected'."),
 ]
 
 _STAT = {"managed_here": ('<span class="stat on">Set · saved here</span>', "Saved (encrypted). Enter a new value to replace it."),
-         "from_env": ('<span class="stat env">Set · from host</span>', "Currently coming from the host config. Setting one here overrides it."),
-         "not_set": ('<span class="stat off">Not set</span>', "")}
+         "from_env": ('<span class="stat env">Set · from host (dev only)</span>', "Coming from the host config — accepted in development only. Setting one here overrides it."),
+         "decrypt_failed": ('<span class="stat err">Saved but unreadable</span>', "The saved key can't be decrypted (the server's SECRET_KEY changed). The vault will NOT use any other key in its place — re-enter it here."),
+         "not_set": ('<span class="stat off">Not set</span>', "The vault only ever uses keys saved here.")}
 
 
 def _settings_page(request: Request, flash: str = "") -> HTMLResponse:
@@ -295,7 +296,7 @@ def _settings_page(request: Request, flash: str = "") -> HTMLResponse:
         pill, hint = _STAT[status]
         clear_btn = (f'<form class="inline" method="post" action="/admin/settings/clear">'
                      f'<input type="hidden" name="name" value="{name}">'
-                     f'<button class="quiet">Clear</button></form>' if status == "managed_here" else "")
+                     f'<button class="quiet">Clear</button></form>' if status in ("managed_here", "decrypt_failed") else "")
         rows += (
             f'<div class="keyrow"><div class="meta"><h3>{html.escape(label)} {pill}</h3>'
             f'<div class="desc">{html.escape(desc)}{(" " + html.escape(hint)) if hint else ""}</div></div>'
@@ -328,7 +329,7 @@ async def settings(request: Request):
     if saved:
         flash = f'<div class="notice"><strong>Saved.</strong> {html.escape(saved)} is set and encrypted. It takes effect on the next request.</div>'
     elif cleared:
-        flash = f'<div class="notice"><strong>Cleared.</strong> {html.escape(cleared)} removed. It now falls back to the host config (or demo mode).</div>'
+        flash = f'<div class="notice"><strong>Cleared.</strong> {html.escape(cleared)} removed. Tools that need it will now refuse until a new key is saved.</div>'
     return _settings_page(request, flash)
 
 
