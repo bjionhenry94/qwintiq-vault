@@ -51,7 +51,7 @@ class ProviderRefused(DataUnavailable):
     a charge and not an outage, so the consultant gets the real reason, not 'try again later'."""
 
     def __init__(self, tool: str, message: str, args: dict):
-        self.tool, self.message, self.args = tool, message, dict(args)
+        self.tool, self.message, self.request_args = tool, message, dict(args)
         super().__init__(message)
 
 

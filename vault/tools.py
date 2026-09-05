@@ -39,7 +39,7 @@ _DATA_ERROR = ("The data lookup is temporarily unavailable. Please try again sho
 def _provider_refused_message(e: "ProviderRefused") -> str:
     """Plain words for a provider error envelope. Names the likely cause when the request carried
     a keyword filter (the live case: the account's plan does not include keyword search)."""
-    keyworded = any(k in e.args for k in ("keyword", "companyKeyword"))
+    keyworded = any(k in e.request_args for k in ("keyword", "companyKeyword"))
     why = (" This account's data plan does not include keyword filtering, so any brief with "
            "keywords is rejected — drop the keywords (use industry, size, roles and titles "
            "instead) or ask the data provider to enable keyword search."
