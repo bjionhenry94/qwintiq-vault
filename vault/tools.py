@@ -40,9 +40,9 @@ def _provider_refused_message(e: "ProviderRefused") -> str:
     """Plain words for a provider error envelope. Names the likely cause when the request carried
     a keyword filter (the live case: the account's plan does not include keyword search)."""
     keyworded = any(k in e.request_args for k in ("keyword", "companyKeyword"))
-    why = (" This account's data plan does not include keyword filtering, so any brief with "
-           "keywords is rejected — drop the keywords (use industry, size, roles and titles "
-           "instead) or ask the data provider to enable keyword search."
+    why = (" The keyword part of the brief was rejected. Try once without keywords (industry, "
+           "size, roles and titles still apply); if keywords matter, tell your QwintiQ admin — "
+           "the exact provider reply is in the vault log."
            if keyworded else
            " The request itself was rejected, so retrying the same brief will not help — change "
            "the brief, or ask your QwintiQ admin to check the data account.")
@@ -286,10 +286,9 @@ def qwintiq_list_export(kind: str, filters: dict, max_rows: int, confirmation_ph
     """Export a MARKET by brief (kind: 'companies' or 'decision_makers') as CSV text.
 
     This pulls a market described by filters — industry, country, size_min/size_max, and for
-    decision_makers also seniorities, departments, titles, exclude_titles. keywords are passed
-    through but the data account's plan may not include keyword search (the provider then
-    rejects the whole request, nothing is charged, and this says so); there is no
-    exclude-keywords filter at all (it refuses one). It CANNOT target specific companies: it does not accept company_domains,
+    decision_makers also seniorities, departments, titles, exclude_titles. keywords match the
+    company's name/description/SEO/industry text; there is no exclude-keywords filter (it
+    refuses one). It CANNOT target specific companies: it does not accept company_domains,
     company names, websites or LinkedIn URLs and will refuse — before any spend — if you pass
     them. To get the decision-makers AT a specific list of companies use qwintiq_company_people
     (or a partner-signal routine's confirm step), then qwintiq_enrich for their emails.

@@ -113,6 +113,10 @@ check("export: an EMPTY exclude_keywords list is harmless", "csv" in out, out[:1
 args = aiark._people_args({"keywords": ["fintech", "payroll"]}, "", "")
 check("people keywords -> companyKeyword (were dropped)", args.get("companyKeyword") == "fintech,payroll"
       and args.get("companyKeywordMode") == "SMART", str(args))
+check("people keywords carry companyKeywordSources (omitting it = provider 401)",
+      args.get("companyKeywordSources") == "NAME,KEYWORD,SEO,DESCRIPTION,INDUSTRY", str(args))
+cargs = aiark._company_args({"keywords": ["payroll"]}, "", "")
+check("company keywords carry keywordSources", cargs.get("keywordSources") == "NAME,KEYWORD,SEO,DESCRIPTION,INDUSTRY", str(cargs))
 
 # ---- 3. unresolved industry / location refuse before spend ----
 CALLS.clear()
@@ -144,7 +148,7 @@ def refusing_mcp_call(tool, arguments, strict=False):
 aiark._mcp_call = refusing_mcp_call
 out = tools.qwintiq_list_export(kind="companies", filters={"industry": "software", "keywords": ["payroll"]},
                                 max_rows=1, confirmation_phrase=PHRASE.format(n=1))
-check("keyword search rejected by provider -> REFUSED BY THE DATA PROVIDER, keyword cause named",
+check("keyword search rejected by provider -> REFUSED BY THE DATA PROVIDER, keyword named",
       "REFUSED BY THE DATA PROVIDER" in out and "keyword" in out and "nothing was charged" in out, out[:200])
 out = tools.qwintiq_list_count(what_you_sell="x", industry="software", country="United States", keywords=["payroll"])
 check("...same on count", "REFUSED BY THE DATA PROVIDER" in out, out[:120])

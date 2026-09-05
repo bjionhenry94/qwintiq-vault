@@ -47,8 +47,8 @@ class DataKeyMissing(Exception):
 
 class ProviderRefused(DataUnavailable):
     """The provider answered a search with an error envelope instead of results (live: a 401 on
-    any search that carries a keyword filter — keyword search is not enabled on the account). Not
-    a charge and not an outage, so the consultant gets the real reason, not 'try again later'."""
+    any keyword search that omitted keywordSources). Not a charge and not an outage, so the
+    consultant gets the real reason, not 'try again later'."""
 
     def __init__(self, tool: str, message: str, args: dict):
         self.tool, self.message, self.request_args = tool, message, dict(args)
@@ -216,6 +216,9 @@ def _resolve(f: dict) -> tuple[str, str]:
     return _resolve_industry(f.get("industry", "")), _resolve_location(f.get("country", ""))
 
 
+_COMPANY_KEYWORD_SOURCES = "NAME,KEYWORD,SEO,DESCRIPTION,INDUSTRY"
+
+
 def _company_args(f: dict, ind: str, loc: str) -> dict:
     a: dict = {}
     if ind:
@@ -227,8 +230,12 @@ def _company_args(f: dict, ind: str, loc: str) -> dict:
     if f.get("size_max") is not None:
         a["maxEmployees"] = int(f["size_max"])
     if f.get("keywords"):
+        # keywordSources is REQUIRED by the hosted MCP even though its schema says "defaults to all":
+        # without it AI-ARK answers '401 service unavailable' (verified live 2026-09-05 — with the
+        # sources named, the same search returns keyword-matched companies). Send all five.
         a["keyword"] = ",".join(f["keywords"])
         a["keywordMode"] = "SMART"
+        a["keywordSources"] = _COMPANY_KEYWORD_SOURCES
     return a
 
 
@@ -256,6 +263,7 @@ def _people_args(f: dict, ind: str, loc: str) -> dict:
         # decision-maker export pulled the whole industry and charged for it).
         a["companyKeyword"] = ",".join(f["keywords"])
         a["companyKeywordMode"] = "SMART"
+        a["companyKeywordSources"] = _COMPANY_KEYWORD_SOURCES  # required, see _company_args
     return a
 
 
