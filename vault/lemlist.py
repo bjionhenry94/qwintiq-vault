@@ -68,18 +68,54 @@ def _get(path: str) -> object:
         raise DataUnavailable from None
 
 
+class LeadRejected(Exception):
+    """Lemlist answered this one lead with a 4xx. Carries a short, safe reason code so the receipt
+    can say WHY (already in the campaign, in another campaign, bad email…) instead of 'failed'."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
+def _reject_reason(status: int, text: str) -> str:
+    t = (text or "").lower()
+    if "already_in_campaign" in t or ("already" in t and "other" not in t):
+        return "already_in_campaign"
+    if status == 409 or "other_campaign" in t:
+        return "in_another_campaign"
+    if "unsubscrib" in t:
+        return "unsubscribed"
+    if "email" in t:
+        return "invalid_email"
+    if "linkedin" in t:
+        return "invalid_linkedin_url"
+    if status in (401, 403):
+        return "key_rejected"
+    if status == 404:
+        return "campaign_not_found"
+    return f"rejected_{status}"
+
+
 def _post(path: str, body: dict) -> dict:
     import httpx
 
     try:
         r = httpx.post(f"{BASE}{path}", json=body, auth=("", _key() or ""), timeout=60)
-        r.raise_for_status()
-        return r.json() if r.content else {}
     except Exception as e:
-        # Log the true error server-side (admin can see it in the service logs); raise a bare,
-        # detail-free exception so the provider/URL never travels back to the consultant.
-        _log.warning("lemlist POST failed: %s", e)
+        _log.warning("lemlist POST transport failure: %s", type(e).__name__)
         raise DataUnavailable from None
+    if 400 <= r.status_code < 500:
+        # Log Lemlist's own words (the 400s of 15-16 Sept were undiagnosable without them).
+        _log.warning("lemlist POST %s -> %s: %s", path.split("?")[0].rsplit("/", 1)[0],
+                     r.status_code, r.text[:300])
+        raise LeadRejected(_reject_reason(r.status_code, r.text))
+    if r.status_code >= 500:
+        _log.warning("lemlist POST -> %s: %s", r.status_code, r.text[:300])
+        raise DataUnavailable
+    try:
+        return r.json() if r.content else {}
+    except Exception:
+        return {}
 
 
 def _mock_campaigns() -> list[dict]:
@@ -127,13 +163,36 @@ _LEAD_FIELDS = ("firstName", "lastName", "companyName", "phone", "linkedinUrl",
                 "picture", "jobTitle", "icebreaker", "companyDomain")
 
 
+# The vault's own row shape (from pulls / enrich) -> Lemlist's field names.
+_ALIASES = {"title": "jobTitle", "job_title": "jobTitle", "company_name": "companyName",
+            "company": "companyName", "linkedin": "linkedinUrl", "linkedin_url": "linkedinUrl",
+            "website": "companyDomain", "company_domain": "companyDomain", "domain": "companyDomain",
+            "first_name": "firstName", "last_name": "lastName", "mobile": "phone"}
+# Bookkeeping the vault adds to rows — never a campaign variable.
+_INTERNAL = {"email", "enriched", "mock", "source", "pending", "ark_error", "full_name", "name"}
+
+
 def _clean_lead(lead: dict) -> dict:
-    """Keep the known Lemlist fields plus any extra custom variables, drop empties and email."""
-    body = {}
-    for k, v in (lead or {}).items():
-        if k == "email" or v in (None, ""):
+    """Map a vault row onto Lemlist's fields: rename the known columns, split full_name, drop the
+    vault's bookkeeping flags and empties, and send every value as TEXT (Lemlist stores variables
+    as text; booleans/objects and a non-profile 'linkedinUrl' are what it answers 400 to)."""
+    lead = lead or {}
+    body: dict = {}
+    for k, v in lead.items():
+        if k in _INTERNAL or v is None or v == "" or isinstance(v, (dict, list, bool)):
             continue
-        body[k] = v
+        body[_ALIASES.get(k, k)] = str(v).strip()
+    full = str(lead.get("full_name") or lead.get("name") or "").strip()
+    if full and "firstName" not in body:
+        first, _, last = full.partition(" ")
+        body["firstName"] = first
+        if last and "lastName" not in body:
+            body["lastName"] = last.strip()
+    li = body.get("linkedinUrl", "")
+    if li and "linkedin.com/" not in li.lower():
+        body.pop("linkedinUrl")
+    elif li and not li.lower().startswith("http"):
+        body["linkedinUrl"] = "https://" + li.lstrip("/")
     return body
 
 
@@ -150,6 +209,7 @@ def upload_leads(campaign_id: str, leads: list[dict]) -> dict:
     with added / skipped (no email) / failed counts. Individual upstream failures are counted,
     not raised, so one bad row never aborts the whole batch."""
     added, skipped, failed = 0, 0, 0
+    rejected: dict[str, list[str]] = {}
     seen: set[str] = set()
     for lead in leads or []:
         email = str((lead or {}).get("email", "")).strip().lower()
@@ -162,7 +222,9 @@ def upload_leads(campaign_id: str, leads: list[dict]) -> dict:
         try:
             add_lead(campaign_id, email, lead)
             added += 1
+        except LeadRejected as e:
+            rejected.setdefault(e.reason, []).append(email)
         except DataUnavailable:
             failed += 1
-    return {"added": added, "skipped_no_email": skipped, "failed": failed,
+    return {"added": added, "skipped_no_email": skipped, "failed": failed, "rejected": rejected,
             "unique_emails": len(seen), "mock": _mock()}

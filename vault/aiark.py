@@ -212,8 +212,52 @@ def _resolve_location(text: str) -> str:
     return ",".join(resolved)
 
 
+def _location_text(f: dict) -> str:
+    """The narrowest place the brief names. AI-ARK OR-s its location tokens, so sending
+    'United States,New York' would WIDEN to the whole country — a state/region therefore replaces
+    the country rather than joining it."""
+    loc = f.get("location") or f.get("state") or f.get("region") or ""
+    if isinstance(loc, (list, tuple)):
+        loc = ",".join(str(x) for x in loc if x)
+    return str(loc).strip() or str(f.get("country") or "").strip()
+
+
 def _resolve(f: dict) -> tuple[str, str]:
-    return _resolve_industry(f.get("industry", "")), _resolve_location(f.get("country", ""))
+    return _resolve_industry(f.get("industry", "")), _resolve_location(_location_text(f))
+
+
+class BadFilter(Exception):
+    """A filter value is malformed. Raised BEFORE any provider call (refuse before spend)."""
+
+
+def _near(f: dict) -> dict | None:
+    """Validate the optional radius filter: {'lat','lng','radius_miles'} (+ optional 'place' label).
+    The CALLER supplies the coordinates of the city/town/county centre; the vault has no geocoder."""
+    near = f.get("near")
+    if not near:
+        return None
+    if not isinstance(near, dict):
+        raise BadFilter("REFUSED (nothing was pulled or charged): 'near' must be "
+                        "{\"place\": \"Brooklyn, NY\", \"lat\": 40.68, \"lng\": -73.94, \"radius_miles\": 10}.")
+    try:
+        lat, lng = float(near["lat"]), float(near["lng"])
+        radius = float(near.get("radius_miles") or near.get("radius") or 0)
+    except (KeyError, TypeError, ValueError):
+        raise BadFilter("REFUSED (nothing was pulled or charged): 'near' needs numeric lat, lng and "
+                        "radius_miles — the coordinates of the town/city/county centre.") from None
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180) or not (0 < radius <= 500):
+        raise BadFilter("REFUSED (nothing was pulled or charged): 'near' is out of range — lat -90..90, "
+                        "lng -180..180, radius_miles above 0 and at most 500.")
+    return {"lat": lat, "lng": lng, "radius": radius}
+
+
+_KEYWORD_MODES = {"smart": "SMART", "word": "WORD", "strict": "STRICT"}
+
+
+def _keyword_mode(f: dict) -> str:
+    """WORD (whole words) by default: SMART is fuzzy and drags in loose matches. 'smart' widens,
+    'strict' demands the exact phrase."""
+    return _KEYWORD_MODES.get(str(f.get("keyword_match") or "word").strip().lower(), "WORD")
 
 
 _COMPANY_KEYWORD_SOURCES = "NAME,KEYWORD,SEO,DESCRIPTION,INDUSTRY"
@@ -234,8 +278,11 @@ def _company_args(f: dict, ind: str, loc: str) -> dict:
         # without it AI-ARK answers '401 service unavailable' (verified live 2026-09-05 — with the
         # sources named, the same search returns keyword-matched companies). Send all five.
         a["keyword"] = ",".join(f["keywords"])
-        a["keywordMode"] = "SMART"
+        a["keywordMode"] = _keyword_mode(f)
         a["keywordSources"] = _COMPANY_KEYWORD_SOURCES
+    near = _near(f)
+    if near:
+        a.update({"geoLat": near["lat"], "geoLng": near["lng"], "geoRadius": near["radius"], "geoUnit": "mi"})
     return a
 
 
@@ -262,8 +309,12 @@ def _people_args(f: dict, ind: str, loc: str) -> dict:
         # go on the company-keyword dial. They used to be dropped here silently (a keyworded
         # decision-maker export pulled the whole industry and charged for it).
         a["companyKeyword"] = ",".join(f["keywords"])
-        a["companyKeywordMode"] = "SMART"
+        a["companyKeywordMode"] = _keyword_mode(f)
         a["companyKeywordSources"] = _COMPANY_KEYWORD_SOURCES  # required, see _company_args
+    near = _near(f)
+    if near:
+        a.update({"companyGeoLat": near["lat"], "companyGeoLng": near["lng"],
+                  "companyGeoRadius": near["radius"], "companyGeoUnit": "mi"})
     return a
 
 
@@ -293,6 +344,10 @@ def _flatten_company(c: dict) -> dict:
         "company_name": summ.get("name") or c.get("name") or "",
         "website": link.get("domain_ltd") or link.get("domain") or link.get("website") or "",
         "country": hq.get("country") or "",
+        "state": hq.get("state") or "",
+        "city": hq.get("city") or "",
+        "postal_code": hq.get("postal_code") or "",
+        "address": hq.get("raw_address") or "",
         "employee_count": (staff.get("total") if isinstance(staff, dict) else "") or "",
         "industry": summ.get("industry") or "",
         "linkedin": link.get("linkedin") or "",
@@ -306,12 +361,17 @@ def _flatten_person(p: dict) -> dict:
     csum = comp.get("summary") or {}
     clink = comp.get("link") or {}
     loc = p.get("location") or {}
+    chq = (comp.get("location") or {}).get("headquarter") or {}
     return {
         "full_name": prof.get("full_name") or p.get("full_name") or "",
         "title": prof.get("title") or "",
         "company_name": csum.get("name") or comp.get("name") or "",
         "website": clink.get("domain_ltd") or clink.get("domain") or clink.get("website") or "",
         "country": loc.get("country") or "",
+        "person_city": loc.get("city") or "",
+        "person_state": loc.get("state") or "",
+        "company_city": chq.get("city") or "",
+        "company_state": chq.get("state") or "",
         "linkedin": link.get("linkedin") or "",
     }
 
@@ -326,7 +386,7 @@ def count_companies(filters: dict) -> dict:
                    "industry": filters.get("industry", "")}]
         return {"total": total, "sample": sample, "mock": True,
                 "resolved_industry": filters.get("industry", ""),
-                "resolved_location": filters.get("country", "")}
+                "resolved_location": _location_text(filters)}
     ind, loc = _resolve(filters)
     payload = _search("company_search", {**_company_args(filters, ind, loc), "page": 0, "size": 1})
     return {"total": payload.get("totalElements", 0),
@@ -340,7 +400,7 @@ def count_people(filters: dict) -> dict:
         return {"total": total, "sample": [{"full_name": "Sam Sample (mock)",
                 "title": (filters.get("titles") or ["Founder"])[0]}], "mock": True,
                 "resolved_industry": filters.get("industry", ""),
-                "resolved_location": filters.get("country", "")}
+                "resolved_location": _location_text(filters)}
     ind, loc = _resolve(filters)
     payload = _search("people_search", {**_people_args(filters, ind, loc), "page": 0, "size": 1})
     return {"total": payload.get("totalElements", 0),

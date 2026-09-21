@@ -112,7 +112,7 @@ out = tools.qwintiq_list_export(kind="decision_makers", filters={"industry": "so
 check("export: an EMPTY exclude_keywords list is harmless", "csv" in out, out[:100])
 args = aiark._people_args({"keywords": ["fintech", "payroll"]}, "", "")
 check("people keywords -> companyKeyword (were dropped)", args.get("companyKeyword") == "fintech,payroll"
-      and args.get("companyKeywordMode") == "SMART", str(args))
+      and args.get("companyKeywordMode") == "WORD", str(args))
 check("people keywords carry companyKeywordSources (omitting it = provider 401)",
       args.get("companyKeywordSources") == "NAME,KEYWORD,SEO,DESCRIPTION,INDUSTRY", str(args))
 cargs = aiark._company_args({"keywords": ["payroll"]}, "", "")

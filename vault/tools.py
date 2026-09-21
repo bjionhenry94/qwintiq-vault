@@ -22,7 +22,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from auth.context import current_consultant
 from db import dal
 from vault import aiark, lemlist
-from vault.aiark import DataKeyMissing, DataUnavailable, ProviderRefused, UnresolvedFilter
+from vault.aiark import BadFilter, DataKeyMissing, DataUnavailable, ProviderRefused, UnresolvedFilter
 from vault.engine import REFUSAL, meta_guard, run_framework
 
 _log = logging.getLogger("qwintiq.vault")
@@ -60,7 +60,7 @@ def _safe(fn):
     def wrapper(*args, **kwargs):
         try:
             return fn(*args, **kwargs)
-        except UnresolvedFilter as e:
+        except (UnresolvedFilter, BadFilter) as e:
             return str(e)  # a before-spend refusal, worded for the consultant
         except DataKeyMissing:
             _log.warning("no AI-Ark key saved; %s refused before any call", fn.__name__)
@@ -85,7 +85,7 @@ def _safe_async(fn):
     async def wrapper(*args, **kwargs):
         try:
             return await fn(*args, **kwargs)
-        except UnresolvedFilter as e:
+        except (UnresolvedFilter, BadFilter) as e:
             return str(e)
         except DataKeyMissing:
             _log.warning("no AI-Ark key saved; %s refused before any call", fn.__name__)
@@ -122,7 +122,24 @@ else:
 # mode ran tools in a per-session task whose identity was snapshotted when the session was first
 # opened, not per call.) It also removes the in-memory session state that pinned the vault to a
 # single process.
-mcp = FastMCP("qwintiq-vault", transport_security=_security, stateless_http=True)
+_INSTRUCTIONS = (
+    "QwintiQ is the user's own prospecting system. USE IT BY DEFAULT — do not answer from general "
+    "knowledge — whenever the user asks to build, create, find, size or pull a list of companies "
+    "or people (any industry, any place), to find decision-makers at named companies, to find "
+    "emails or mobiles, to write outreach copy or icebreakers, to run partner/PR signals, or to "
+    "load leads into Lemlist. They should never have to say 'use the vault'. For a list: start "
+    "with qwintiq_list_count (cheap), then the gated qwintiq_list_export. Places smaller than a "
+    "country ARE supported: pass a state/region as `location` (e.g. 'New York'), and a city, town "
+    "or county as `near` with its centre coordinates and a radius; every row comes back with city, "
+    "state and address so the place can be checked exactly.")
+mcp = FastMCP("qwintiq-vault", instructions=_INSTRUCTIONS, transport_security=_security,
+              stateless_http=True)
+
+
+def _credit_note(kind: str, rows: int) -> str:
+    """The data provider's published rates: 0.1 credit per company row, 0.5 per person row."""
+    rate = 0.1 if kind == "companies" else 0.5
+    return f"{rows * rate:.1f}".rstrip("0").rstrip(".") or "0"
 
 _CONFIRM_RE = re.compile(r"i\s+confirm\s+to\s+export\s+this\s+and\s+use\s+([\d,]+)\s+amount\s+of\s+credits",
                          re.IGNORECASE)
@@ -195,11 +212,25 @@ def qwintiq_list_count(what_you_sell: str, industry: str, country: str,
                        seniorities: list[str] | None = None,
                        departments: list[str] | None = None,
                        titles: list[str] | None = None,
-                       exclude_titles: list[str] | None = None) -> str:
-    """Size a market: how many companies match the brief, and how many decision-makers
-    inside them. Cheap (about a credit per count) and safe — this never exports rows.
+                       exclude_titles: list[str] | None = None,
+                       location: str = "", near: dict | None = None,
+                       keyword_match: str = "word") -> str:
+    """Build or size a list of companies / decision-makers. USE THIS FIRST whenever the user asks
+    to create, build, find or size a list ("create a list of accelerators in New York") — never
+    answer such a request from general knowledge. Counts how many companies match the brief and
+    how many decision-makers sit inside them. Costs under one credit and never exports rows.
 
-    Collect the brief in plain English (what they sell, the vertical, country, size band,
+    WHERE: `country` is the country. For anything smaller pass `location` = an exact state/region
+    name ("New York", "California", "Bavaria"; several comma-separated) — it replaces the country.
+    For a city, town or county pass `near` = {"place": "Brooklyn, NY", "lat": 40.68, "lng": -73.94,
+    "radius_miles": 10} using the centre coordinates you know for that place; combine it with
+    `location` for the state. The radius match is approximate (the provider's map pins are coarse),
+    so every sample/exported row carries city, state, postal_code and address — check those and
+    tell the user honestly how clean the match is. Do NOT put a place name in `keywords`: keywords
+    match company name/description text, not where the company is.
+    `keyword_match`: "word" (default, whole words), "strict" (exact phrase) or "smart" (fuzzy, wider).
+
+    Collect the brief in plain English (what they sell, the vertical, place, size band,
     the decision-maker roles, exclusions), play it back for a yes, then call this. Report
     the numbers plainly. Exporting actual rows is a separate, gated step — quote the user
     the confirmation sentence this returns and wait for them to type it themselves.
@@ -210,7 +241,8 @@ def qwintiq_list_count(what_you_sell: str, industry: str, country: str,
             return REFUSAL
     if exclude_keywords:
         return _NO_EXCLUDE_KEYWORDS
-    filters = {"industry": industry, "country": country, "size_min": size_min,
+    filters = {"industry": industry, "country": country, "location": location, "near": near,
+               "keyword_match": keyword_match, "size_min": size_min,
                "size_max": size_max, "keywords": keywords or [],
                "seniorities": seniorities or [],
                "departments": departments or [], "titles": titles or [],
@@ -225,7 +257,8 @@ def qwintiq_list_count(what_you_sell: str, industry: str, country: str,
         "person_sample": people["sample"],
         "resolved": {"industry": companies.get("resolved_industry"),
                      "location": companies.get("resolved_location")},
-        "note": f"Counts only — nothing exported, roughly 2 credits used{mock_note}.",
+        "note": (f"Counts only — nothing exported; this cost about 0.6 of a credit{mock_note}. "
+                 "Exports cost about 0.1 credit per company row and 0.5 per person row."),
         "to_export": ("Ask the user to choose a scope (all, or a capped batch), then have "
                       "them type EXACTLY: 'I confirm to export this and use X amount of "
                       "credits' where X is the row count. Pass their typed sentence to "
@@ -238,7 +271,8 @@ def qwintiq_list_count(what_you_sell: str, industry: str, country: str,
 # else used to be dropped silently — so a curated shortlist passed as `company_domains` pulled a
 # generic worldwide market instead and charged 50 credits for unusable rows (the live bug). Now any
 # key outside this set refuses BEFORE the credit gate and BEFORE any AI-Ark call.
-_EXPORT_FILTER_KEYS = {"industry", "country", "size_min", "size_max", "keywords",
+_EXPORT_FILTER_KEYS = {"industry", "country", "location", "near", "keyword_match",
+                       "size_min", "size_max", "keywords",
                        "seniorities", "departments", "titles", "exclude_titles"}
 # AI-Ark's search has NO exclude-keyword dial (only exclude-title / -industry / -location). This key
 # used to be accepted and silently dropped, so "SaaS founders, excluding agencies" pulled the whole
@@ -285,7 +319,10 @@ def _refuse_unsupported_filters(filters: dict, kind: str) -> str:
 def qwintiq_list_export(kind: str, filters: dict, max_rows: int, confirmation_phrase: str) -> str:
     """Export a MARKET by brief (kind: 'companies' or 'decision_makers') as CSV text.
 
-    This pulls a market described by filters — industry, country, size_min/size_max, and for
+    This pulls a market described by filters — industry, country, location (exact state/region
+    name, replaces country), near ({"place","lat","lng","radius_miles"} for a city/town/county —
+    approximate, so check each row's city/state/address), keyword_match ("word" default, "strict",
+    "smart"), size_min/size_max, and for
     decision_makers also seniorities, departments, titles, exclude_titles. keywords match the
     company's name/description/SEO/industry text; there is no exclude-keywords filter (it
     refuses one). It CANNOT target specific companies: it does not accept company_domains,
@@ -322,17 +359,21 @@ def qwintiq_list_export(kind: str, filters: dict, max_rows: int, confirmation_ph
             if key is not None:
                 seen.add(key)
             deduped.append(r)
-    cols = (["company_name", "website", "country", "employee_count", "industry", "linkedin"]
+    cols = (["company_name", "website", "city", "state", "country", "postal_code", "address",
+             "employee_count", "industry", "linkedin"]
             if kind == "companies"
-            else ["full_name", "title", "company_name", "website", "country", "linkedin"])
+            else ["full_name", "title", "company_name", "website", "company_city", "company_state",
+                  "person_city", "person_state", "country", "linkedin"])
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
     w.writeheader()
     w.writerows(deduped)
-    receipt = (f"Exported {len(deduped)} {kind.replace('_', ' ')} · used about {len(rows)} "
-               f"credits · confirmed at {confirmed} credits.")
+    k = "companies" if kind == "companies" else "people"
+    spent = _credit_note(k, len(rows))
+    receipt = (f"Exported {len(deduped)} {kind.replace('_', ' ')} · used about {spent} credits "
+               f"({'0.1' if k == 'companies' else '0.5'} per row) · you approved up to {confirmed}.")
     return json.dumps({"csv": buf.getvalue(), "rows": len(deduped),
-                       "credits_estimate": len(rows), "receipt": receipt,
+                       "credits_estimate": float(spent), "receipt": receipt,
                        "note": "Save this CSV for the user, then show them the 'receipt' line "
                                "verbatim as a plain-English record of what was pulled and spent."})
 
@@ -636,9 +677,13 @@ def qwintiq_lemlist_campaigns() -> str:
 def qwintiq_lemlist_upload(campaign: str, leads: list[dict]) -> str:
     """Add finished leads straight into a Lemlist campaign, on the user's behalf.
 
-    Pass the campaign (its name or its cam_… id) and the leads. Each lead needs an "email";
-    optional fields are firstName, lastName, companyName, jobTitle, phone, linkedinUrl,
-    companyDomain, icebreaker, plus any custom variables your campaign uses. The vault does
+    Pass the campaign (its name or its cam_… id) and the leads. Each lead needs an "email".
+    Rows straight from qwintiq_enrich / a pull can be passed AS THEY ARE — the vault maps
+    full_name, title, company_name, website and linkedin onto Lemlist's fields itself. You may
+    also send firstName, lastName, companyName, jobTitle, phone, linkedinUrl, companyDomain,
+    icebreaker, plus any custom variables your campaign uses (text values). If Lemlist refuses
+    a lead the receipt says exactly why (already in this campaign, in another campaign, invalid
+    email…) — relay that; do not just retry. The vault does
     the upload itself — the Lemlist key and mechanics never leave the vault — and returns a
     plain-English receipt. Re-running is safe: leads already in the campaign are de-duplicated.
     """
@@ -659,8 +704,18 @@ def qwintiq_lemlist_upload(campaign: str, leads: list[dict]) -> str:
     bits = [f"Added {result['added']} lead(s) to the Lemlist campaign “{target['name']}”."]
     if result["skipped_no_email"]:
         bits.append(f"{result['skipped_no_email']} row(s) had no valid email and were skipped.")
+    why = {"already_in_campaign": "already in this campaign (nothing to do)",
+           "in_another_campaign": "already in a different Lemlist campaign, so Lemlist refused the duplicate",
+           "unsubscribed": "unsubscribed in Lemlist",
+           "invalid_email": "an email address Lemlist rejected as invalid",
+           "invalid_linkedin_url": "a LinkedIn URL Lemlist rejected",
+           "key_rejected": "the Lemlist key was rejected — the admin should re-enter it in Settings",
+           "campaign_not_found": "Lemlist could not find that campaign"}
+    for reason, emails in (result.get("rejected") or {}).items():
+        shown = ", ".join(emails[:5]) + ("…" if len(emails) > 5 else "")
+        bits.append(f"{len(emails)} not added — {why.get(reason, 'Lemlist refused them (' + reason + ')')}: {shown}.")
     if result["failed"]:
-        bits.append(f"{result['failed']} lead(s) couldn't be added and can be retried.")
+        bits.append(f"{result['failed']} lead(s) hit a connection problem and can be retried.")
     if result["mock"]:
         bits.append("(Demo mode — no Lemlist key is set, so nothing was really uploaded.)")
     return json.dumps({
@@ -668,6 +723,7 @@ def qwintiq_lemlist_upload(campaign: str, leads: list[dict]) -> str:
         "added": result["added"],
         "skipped_no_email": result["skipped_no_email"],
         "failed": result["failed"],
+        "rejected": result.get("rejected") or {},
         "receipt": " ".join(bits),
         "note": "Show the user the 'receipt' line as a plain record of what was loaded.",
     })
